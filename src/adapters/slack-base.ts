@@ -1,4 +1,3 @@
-import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { basename, join } from "path";
@@ -7,16 +6,16 @@ import type { Attachment, ChannelStore } from "../store.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 
 // ============================================================================
-// Slack-specific types (internal to this adapter)
+// Slack-specific types (internal to adapter)
 // ============================================================================
 
-interface SlackUser {
+export interface SlackUser {
 	id: string;
 	userName: string;
 	displayName: string;
 }
 
-interface SlackChannel {
+export interface SlackChannel {
 	id: string;
 	name: string;
 }
@@ -27,7 +26,7 @@ interface SlackChannel {
 
 type QueuedWork = () => Promise<void>;
 
-class ChannelQueue {
+export class ChannelQueue {
 	private queue: QueuedWork[] = [];
 	private processing = false;
 
@@ -55,17 +54,16 @@ class ChannelQueue {
 }
 
 // ============================================================================
-// SlackAdapter
+// SlackBase — abstract base class for Slack adapters
 // ============================================================================
 
-export interface SlackAdapterConfig {
-	appToken: string;
+export interface SlackBaseConfig {
 	botToken: string;
 	workingDir: string;
 	store: ChannelStore;
 }
 
-export class SlackAdapter implements PlatformAdapter {
+export abstract class SlackBase implements PlatformAdapter {
 	readonly name = "slack";
 	readonly maxMessageLength = 40000;
 	readonly formatInstructions = `## Slack Formatting (mrkdwn, NOT Markdown)
@@ -74,40 +72,39 @@ Do NOT use **double asterisks** or [markdown](links).
 
 When mentioning users, use <@username> format (e.g., <@mario>).`;
 
-	private socketClient: SocketModeClient;
-	private webClient: WebClient;
-	private handler!: MomHandler;
-	private workingDir: string;
-	private store: ChannelStore;
-	private botUserId: string | null = null;
-	private startupTs: string | null = null;
+	protected webClient: WebClient;
+	protected handler!: MomHandler;
+	protected workingDir: string;
+	protected store: ChannelStore;
+	protected botUserId: string | null = null;
+	protected startupTs: string | null = null;
 
-	private users = new Map<string, SlackUser>();
-	private channels = new Map<string, SlackChannel>();
-	private queues = new Map<string, ChannelQueue>();
+	protected users = new Map<string, SlackUser>();
+	protected channels = new Map<string, SlackChannel>();
+	protected queues = new Map<string, ChannelQueue>();
 
-	constructor(config: SlackAdapterConfig) {
+	constructor(config: SlackBaseConfig) {
 		this.workingDir = config.workingDir;
 		this.store = config.store;
-		this.socketClient = new SocketModeClient({ appToken: config.appToken });
 		this.webClient = new WebClient(config.botToken);
 	}
 
-	/**
-	 * Set the handler that will receive events from this adapter.
-	 * Must be called before start().
-	 */
 	setHandler(handler: MomHandler): void {
 		this.handler = handler;
 	}
 
 	// ==========================================================================
-	// PlatformAdapter implementation
+	// Abstract — subclasses implement connection lifecycle
 	// ==========================================================================
 
-	async start(): Promise<void> {
-		if (!this.handler) throw new Error("SlackAdapter: handler not set. Call setHandler() before start().");
+	abstract start(): Promise<void>;
+	abstract stop(): Promise<void>;
 
+	// ==========================================================================
+	// Shared startup sequence (call from subclass start())
+	// ==========================================================================
+
+	protected async initMetadata(): Promise<void> {
 		const auth = await this.webClient.auth.test();
 		this.botUserId = auth.user_id as string;
 
@@ -115,17 +112,16 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		log.logInfo(`Loaded ${this.channels.size} channels, ${this.users.size} users`);
 
 		await this.backfillAllChannels();
+	}
 
-		this.setupEventHandlers();
-		await this.socketClient.start();
-
+	protected markStarted(): void {
 		this.startupTs = (Date.now() / 1000).toFixed(6);
 		log.logConnected();
 	}
 
-	async stop(): Promise<void> {
-		await this.socketClient.disconnect();
-	}
+	// ==========================================================================
+	// PlatformAdapter implementation
+	// ==========================================================================
 
 	getUser(userId: string): UserInfo | undefined {
 		return this.users.get(userId);
@@ -201,7 +197,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	}
 
 	// ==========================================================================
-	// Slack-specific: Create MomContext from a Slack event
+	// Context creation
 	// ==========================================================================
 
 	createContext(event: MomEvent, _store: ChannelStore, isEvent?: boolean): MomContext {
@@ -318,10 +314,10 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	}
 
 	// ==========================================================================
-	// Private - Event Handlers
+	// Shared event handling helpers
 	// ==========================================================================
 
-	private getQueue(channelId: string): ChannelQueue {
+	protected getQueue(channelId: string): ChannelQueue {
 		let queue = this.queues.get(channelId);
 		if (!queue) {
 			queue = new ChannelQueue();
@@ -330,134 +326,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		return queue;
 	}
 
-	private setupEventHandlers(): void {
-		// Channel @mentions
-		this.socketClient.on("app_mention", ({ event, ack }) => {
-			const e = event as {
-				text: string;
-				channel: string;
-				user: string;
-				ts: string;
-				files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
-			};
-
-			if (e.channel.startsWith("D")) {
-				ack();
-				return;
-			}
-
-			const momEvent: MomEvent = {
-				type: "mention",
-				channel: e.channel,
-				ts: e.ts,
-				user: e.user,
-				text: e.text.replace(/<@[A-Z0-9]+>/gi, "").trim(),
-				files: e.files,
-			};
-
-			momEvent.attachments = this.logUserMessage(momEvent);
-
-			if (this.startupTs && e.ts < this.startupTs) {
-				log.logInfo(
-					`[${e.channel}] Logged old message (pre-startup), not triggering: ${momEvent.text.substring(0, 30)}`,
-				);
-				ack();
-				return;
-			}
-
-			if (momEvent.text.toLowerCase().trim() === "stop") {
-				if (this.handler.isRunning(e.channel)) {
-					this.handler.handleStop(e.channel, this);
-				} else {
-					this.postMessage(e.channel, "_Nothing running_");
-				}
-				ack();
-				return;
-			}
-
-			if (this.handler.isRunning(e.channel)) {
-				this.postMessage(e.channel, "_Already working. Say `@mom stop` to cancel._");
-			} else {
-				this.getQueue(e.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
-			}
-
-			ack();
-		});
-
-		// All messages (for logging) + DMs (for triggering)
-		this.socketClient.on("message", ({ event, ack }) => {
-			const e = event as {
-				text?: string;
-				channel: string;
-				user?: string;
-				ts: string;
-				channel_type?: string;
-				subtype?: string;
-				bot_id?: string;
-				files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
-			};
-
-			if (e.bot_id || !e.user || e.user === this.botUserId) {
-				ack();
-				return;
-			}
-			if (e.subtype !== undefined && e.subtype !== "file_share") {
-				ack();
-				return;
-			}
-			if (!e.text && (!e.files || e.files.length === 0)) {
-				ack();
-				return;
-			}
-
-			const isDM = e.channel_type === "im";
-			const isBotMention = e.text?.includes(`<@${this.botUserId}>`);
-
-			if (!isDM && isBotMention) {
-				ack();
-				return;
-			}
-
-			const momEvent: MomEvent = {
-				type: isDM ? "dm" : "mention",
-				channel: e.channel,
-				ts: e.ts,
-				user: e.user,
-				text: (e.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
-				files: e.files,
-			};
-
-			momEvent.attachments = this.logUserMessage(momEvent);
-
-			if (this.startupTs && e.ts < this.startupTs) {
-				log.logInfo(`[${e.channel}] Skipping old message (pre-startup): ${momEvent.text.substring(0, 30)}`);
-				ack();
-				return;
-			}
-
-			if (isDM) {
-				if (momEvent.text.toLowerCase().trim() === "stop") {
-					if (this.handler.isRunning(e.channel)) {
-						this.handler.handleStop(e.channel, this);
-					} else {
-						this.postMessage(e.channel, "_Nothing running_");
-					}
-					ack();
-					return;
-				}
-
-				if (this.handler.isRunning(e.channel)) {
-					this.postMessage(e.channel, "_Already working. Say `stop` to cancel._");
-				} else {
-					this.getQueue(e.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
-				}
-			}
-
-			ack();
-		});
-	}
-
-	private logUserMessage(event: MomEvent): Attachment[] {
+	protected logUserMessage(event: MomEvent): Attachment[] {
 		const user = this.users.get(event.user);
 		const attachments = event.files ? this.store.processAttachments(event.channel, event.files, event.ts) : [];
 		this.logToFile(event.channel, {
@@ -474,7 +343,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	}
 
 	// ==========================================================================
-	// Private - Backfill
+	// Backfill
 	// ==========================================================================
 
 	private getExistingTimestamps(channelId: string): Set<string> {
@@ -592,10 +461,10 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	}
 
 	// ==========================================================================
-	// Private - Fetch Users/Channels
+	// Fetch Users/Channels
 	// ==========================================================================
 
-	private async fetchUsers(): Promise<void> {
+	protected async fetchUsers(): Promise<void> {
 		let cursor: string | undefined;
 		do {
 			const result = await this.webClient.users.list({ limit: 200, cursor });
@@ -613,7 +482,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		} while (cursor);
 	}
 
-	private async fetchChannels(): Promise<void> {
+	protected async fetchChannels(): Promise<void> {
 		let cursor: string | undefined;
 		do {
 			const result = await this.webClient.conversations.list({

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { join, resolve } from "path";
-import { SlackAdapter } from "./adapters/slack.js";
+import { SlackSocketAdapter } from "./adapters/slack-socket.js";
+import { SlackWebhookAdapter } from "./adapters/slack-webhook.js";
 import { TelegramAdapter } from "./adapters/telegram.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
@@ -20,6 +21,7 @@ interface ParsedArgs {
 	sandbox: SandboxConfig;
 	downloadChannel?: string;
 	adapters: string[];
+	port: number;
 }
 
 function parseArgs(): ParsedArgs {
@@ -28,6 +30,7 @@ function parseArgs(): ParsedArgs {
 	let workingDir: string | undefined;
 	let downloadChannelId: string | undefined;
 	let adapterArg: string | undefined;
+	let port: number | undefined;
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
@@ -43,12 +46,17 @@ function parseArgs(): ParsedArgs {
 			adapterArg = arg.slice("--adapter=".length);
 		} else if (arg === "--adapter") {
 			adapterArg = args[++i] || undefined;
+		} else if (arg.startsWith("--port=")) {
+			port = parseInt(arg.slice("--port=".length), 10);
+		} else if (arg === "--port") {
+			port = parseInt(args[++i] || "", 10);
 		} else if (!arg.startsWith("-")) {
 			workingDir = arg;
 		}
 	}
 
 	// If --adapter specified, use it (comma-separated). Otherwise auto-detect from env vars.
+	// "slack" alone = "slack:socket" for backwards compat.
 	let adapters: string[];
 	if (adapterArg) {
 		adapters = adapterArg.split(",").map((a) => a.trim());
@@ -56,6 +64,12 @@ function parseArgs(): ParsedArgs {
 		adapters = [];
 		if (process.env.MOM_SLACK_APP_TOKEN && process.env.MOM_SLACK_BOT_TOKEN) {
 			adapters.push("slack");
+		}
+		if (process.env.MOM_SLACK_SIGNING_SECRET && process.env.MOM_SLACK_BOT_TOKEN) {
+			// Auto-detect webhook mode if signing secret is set (and no app token)
+			if (!adapters.includes("slack")) {
+				adapters.push("slack:webhook");
+			}
 		}
 		if (process.env.MOM_TELEGRAM_BOT_TOKEN) {
 			adapters.push("telegram");
@@ -66,11 +80,14 @@ function parseArgs(): ParsedArgs {
 		}
 	}
 
+	const resolvedPort = port || parseInt(process.env.MOM_HTTP_PORT || "", 10) || 3000;
+
 	return {
 		workingDir: workingDir ? resolve(workingDir) : undefined,
 		sandbox,
 		downloadChannel: downloadChannelId,
 		adapters,
+		port: resolvedPort,
 	};
 }
 
@@ -89,8 +106,9 @@ if (parsedArgs.downloadChannel) {
 
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
-	console.error("Usage: mom [--sandbox=host|docker:<name>] [--adapter=slack,telegram] <working-directory>");
+	console.error("Usage: mom [--sandbox=host|docker:<name>] [--adapter=slack:socket,telegram] [--port=3000] <working-directory>");
 	console.error("       mom --download <channel-id>");
+	console.error("       Adapters: slack (=slack:socket), slack:webhook, telegram");
 	console.error("       (omit --adapter to auto-detect from env vars)");
 	process.exit(1);
 }
@@ -110,7 +128,8 @@ type AdapterWithHandler = PlatformAdapter & { setHandler(h: MomHandler): void };
 
 function createAdapter(name: string): AdapterWithHandler {
 	switch (name) {
-		case "slack": {
+		case "slack":
+		case "slack:socket": {
 			const appToken = process.env.MOM_SLACK_APP_TOKEN;
 			const botToken = process.env.MOM_SLACK_BOT_TOKEN;
 			if (!appToken || !botToken) {
@@ -118,7 +137,17 @@ function createAdapter(name: string): AdapterWithHandler {
 				process.exit(1);
 			}
 			const store = new ChannelStore({ workingDir, botToken });
-			return new SlackAdapter({ appToken, botToken, workingDir, store });
+			return new SlackSocketAdapter({ appToken, botToken, workingDir, store });
+		}
+		case "slack:webhook": {
+			const botToken = process.env.MOM_SLACK_BOT_TOKEN;
+			const signingSecret = process.env.MOM_SLACK_SIGNING_SECRET;
+			if (!botToken || !signingSecret) {
+				console.error("Missing env: MOM_SLACK_BOT_TOKEN, MOM_SLACK_SIGNING_SECRET");
+				process.exit(1);
+			}
+			const store = new ChannelStore({ workingDir, botToken });
+			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, port: parsedArgs.port });
 		}
 		case "telegram": {
 			const botToken = process.env.MOM_TELEGRAM_BOT_TOKEN;
@@ -129,7 +158,7 @@ function createAdapter(name: string): AdapterWithHandler {
 			return new TelegramAdapter({ botToken, workingDir });
 		}
 		default:
-			console.error(`Unknown adapter: ${name}. Use 'slack' or 'telegram'.`);
+			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', or 'telegram'.`);
 			process.exit(1);
 	}
 }
