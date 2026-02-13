@@ -91,10 +91,12 @@ Options:
   --port=<number>             HTTP port for webhook adapters (default: 3000)
 
 Adapter names:
-  slack          Slack Socket Mode (default, same as slack:socket)
-  slack:socket   Slack Socket Mode (outbound WebSocket, always-on)
-  slack:webhook  Slack HTTP Events API (inbound HTTP, serverless-friendly)
-  telegram       Telegram polling (default)
+  slack              Slack Socket Mode (default, same as slack:socket)
+  slack:socket       Slack Socket Mode (outbound WebSocket, always-on)
+  slack:webhook      Slack HTTP Events API (inbound HTTP, serverless-friendly)
+  telegram           Telegram polling (default, same as telegram:polling)
+  telegram:polling   Telegram long-polling (persistent outbound connection)
+  telegram:webhook   Telegram webhook (inbound HTTPS, serverless-friendly)
 ```
 
 ## Environment Variables
@@ -104,7 +106,13 @@ Adapter names:
 | `MOM_SLACK_APP_TOKEN` | Slack app-level token for Socket Mode (xapp-...) |
 | `MOM_SLACK_BOT_TOKEN` | Slack bot token (xoxb-...) |
 | `MOM_SLACK_SIGNING_SECRET` | Slack signing secret for webhook mode |
-| `MOM_HTTP_PORT` | HTTP port for webhook adapters (default: 3000) |
+| `MOM_HTTP_PORT` | HTTP port for Slack webhook adapter (default: 3000) |
+| `MOM_TELEGRAM_BOT_TOKEN` | Telegram bot token from @BotFather |
+| `MOM_TELEGRAM_WEBHOOK_URL` | Public HTTPS URL for Telegram webhook (e.g. `https://1.2.3.4:8443/telegram/webhook`) |
+| `MOM_TELEGRAM_WEBHOOK_SECRET` | Secret token for verifying Telegram webhook requests |
+| `MOM_TELEGRAM_WEBHOOK_PORT` | Port for Telegram webhook HTTPS server (default: 3001). Telegram only allows 80, 88, 443, or 8443 |
+| `MOM_TELEGRAM_TLS_CERT` | Path to TLS certificate PEM (for self-signed certs on bare IP) |
+| `MOM_TELEGRAM_TLS_KEY` | Path to TLS key PEM (required alongside TLS_CERT) |
 | `ANTHROPIC_API_KEY` | (Optional) Anthropic API key |
 
 ## Authentication
@@ -473,9 +481,15 @@ mom --sandbox=docker:mom-exec ./data-exec
 
 ### Code Structure
 
-- `src/main.ts`: Entry point, CLI arg parsing, handler setup, SlackContext adapter
+- `src/main.ts`: Entry point, CLI arg parsing, handler setup
 - `src/agent.ts`: Agent runner, event handling, tool execution, session management
-- `src/slack.ts`: Slack integration (Socket Mode), backfill, message logging
+- `src/adapters/types.ts`: Platform-agnostic adapter interfaces
+- `src/adapters/slack-base.ts`: Slack abstract base class (shared API ops, backfill, context)
+- `src/adapters/slack-socket.ts`: Slack Socket Mode adapter (outbound WebSocket)
+- `src/adapters/slack-webhook.ts`: Slack HTTP Events API adapter (inbound HTTP)
+- `src/adapters/telegram-base.ts`: Telegram abstract base class (shared Bot API ops, context)
+- `src/adapters/telegram-polling.ts`: Telegram long-polling adapter
+- `src/adapters/telegram-webhook.ts`: Telegram webhook adapter (inbound HTTPS)
 - `src/context.ts`: Session manager (context.jsonl), log-to-context sync
 - `src/store.ts`: Channel data persistence, attachment downloads
 - `src/log.ts`: Centralized logging (console output)
