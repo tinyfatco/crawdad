@@ -1,6 +1,6 @@
 import { Cron } from "croner";
-import { existsSync, type FSWatcher, mkdirSync, readdirSync, statSync, unlinkSync, watch } from "fs";
-import { readFile } from "fs/promises";
+import { existsSync, type FSWatcher, mkdirSync, statSync, unlinkSync, watch } from "fs";
+import { readFile, readdir } from "fs/promises";
 import { join } from "path";
 import type { MomEvent as MomIncomingEvent, PlatformAdapter } from "./adapters/types.js";
 import * as log from "./log.js";
@@ -66,16 +66,17 @@ export class EventsWatcher {
 
 		log.logInfo(`Events watcher starting, dir: ${this.eventsDir}`);
 
-		// Scan existing files
-		this.scanExisting();
-
-		// Watch for changes
+		// Watch for changes immediately (fast)
 		this.watcher = watch(this.eventsDir, (_eventType, filename) => {
 			if (!filename || !filename.endsWith(".json")) return;
 			this.debounce(filename, () => this.handleFileChange(filename));
 		});
 
-		log.logInfo(`Events watcher started, tracking ${this.knownFiles.size} files`);
+		// Scan existing files ASYNC — don't block the event loop.
+		// On slow filesystems (s3fs/FUSE), readdir can take 60+ seconds.
+		this.scanExistingAsync().then(() => {
+			log.logInfo(`Events watcher started, tracking ${this.knownFiles.size} files`);
+		});
 	}
 
 	/**
@@ -124,10 +125,10 @@ export class EventsWatcher {
 		);
 	}
 
-	private scanExisting(): void {
+	private async scanExistingAsync(): Promise<void> {
 		let files: string[];
 		try {
-			files = readdirSync(this.eventsDir).filter((f) => f.endsWith(".json"));
+			files = (await readdir(this.eventsDir)).filter((f) => f.endsWith(".json"));
 		} catch (err) {
 			log.logWarning("Failed to read events directory", String(err));
 			return;

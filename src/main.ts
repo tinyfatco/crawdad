@@ -285,7 +285,15 @@ for (const adapter of adapters) {
 	adapter.setHandler(handler);
 }
 
-// Start events watcher (routes to all adapters)
+// Start all adapters FIRST — they bind HTTP ports that webhooks need.
+// Events watcher uses readdirSync which blocks the event loop on slow
+// filesystems (e.g. s3fs/R2 FUSE mounts). Starting adapters first ensures
+// ports are listening before the potentially slow events scan.
+for (const adapter of adapters) {
+	adapter.start();
+}
+
+// Start events watcher AFTER adapters (may block on slow FS)
 const eventsWatcher = createEventsWatcher(workingDir, adapters);
 eventsWatcher.start();
 
@@ -307,8 +315,3 @@ process.on("SIGTERM", () => {
 	}
 	process.exit(0);
 });
-
-// Start all adapters
-for (const adapter of adapters) {
-	adapter.start();
-}
