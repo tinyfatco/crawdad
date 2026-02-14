@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { join, resolve } from "path";
+import { EmailWebhookAdapter } from "./adapters/email-webhook.js";
 import { SlackSocketAdapter } from "./adapters/slack-socket.js";
 import { SlackWebhookAdapter } from "./adapters/slack-webhook.js";
 import { TelegramPollingAdapter } from "./adapters/telegram-polling.js";
@@ -74,6 +75,9 @@ function parseArgs(): ParsedArgs {
 		}
 		if (process.env.MOM_TELEGRAM_BOT_TOKEN) {
 			adapters.push("telegram");
+		}
+		if (process.env.MOM_EMAIL_TOOLS_TOKEN) {
+			adapters.push("email:webhook");
 		}
 		// Default to slack if nothing detected
 		if (adapters.length === 0) {
@@ -177,8 +181,18 @@ function createAdapter(name: string): AdapterWithHandler {
 			const tlsKey = process.env.MOM_TELEGRAM_TLS_KEY || undefined;
 			return new TelegramWebhookAdapter({ botToken, workingDir, webhookUrl, webhookSecret, port: telegramPort, skipRegistration, tlsCert, tlsKey });
 		}
+		case "email:webhook": {
+			const toolsToken = process.env.MOM_EMAIL_TOOLS_TOKEN;
+			if (!toolsToken) {
+				console.error("Missing env: MOM_EMAIL_TOOLS_TOKEN");
+				process.exit(1);
+			}
+			const emailPort = parseInt(process.env.MOM_EMAIL_WEBHOOK_PORT || "", 10) || 3003;
+			const sendUrl = process.env.MOM_EMAIL_SEND_URL || "https://tinyfat.com/api/email/send";
+			return new EmailWebhookAdapter({ workingDir, port: emailPort, toolsToken, sendUrl });
+		}
 		default:
-			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', or 'telegram:webhook'.`);
+			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', or 'email:webhook'.`);
 			process.exit(1);
 	}
 }
