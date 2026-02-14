@@ -75,7 +75,12 @@ function parseArgs(): ParsedArgs {
 			}
 		}
 		if (process.env.MOM_TELEGRAM_BOT_TOKEN) {
-			adapters.push("telegram");
+			// Prefer webhook mode when secret is set (crawdad-cf sets this)
+			if (process.env.MOM_TELEGRAM_WEBHOOK_SECRET) {
+				adapters.push("telegram:webhook");
+			} else {
+				adapters.push("telegram");
+			}
 		}
 		if (process.env.MOM_EMAIL_TOOLS_TOKEN) {
 			adapters.push("email:webhook");
