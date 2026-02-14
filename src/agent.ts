@@ -21,6 +21,7 @@ import { MomSettingsManager, syncLogToSessionManager } from "./context.js";
 import * as log from "./log.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import type { ChannelStore } from "./store.js";
+import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 
 // Hardcoded model for now - TODO: make configurable (issue #63)
@@ -463,8 +464,9 @@ function createRunner(
 	// Load existing messages
 	const loadedSession = sessionManager.buildSessionContext();
 	if (loadedSession.messages.length > 0) {
-		agent.replaceMessages(loadedSession.messages);
-		log.logInfo(`[${channelId}] Loaded ${loadedSession.messages.length} messages from context.jsonl`);
+		const sanitized = sanitizeMessages(loadedSession.messages as unknown as Parameters<typeof sanitizeMessages>[0]);
+		agent.replaceMessages(sanitized as unknown as typeof loadedSession.messages);
+		log.logInfo(`[${channelId}] Loaded ${sanitized.length} messages from context.jsonl`);
 	}
 
 	const resourceLoader: ResourceLoader = {
@@ -675,8 +677,9 @@ function createRunner(
 			// This picks up any messages synced above
 			const reloadedSession = sessionManager.buildSessionContext();
 			if (reloadedSession.messages.length > 0) {
-				agent.replaceMessages(reloadedSession.messages);
-				log.logInfo(`[${channelId}] Reloaded ${reloadedSession.messages.length} messages from context`);
+				const sanitized = sanitizeMessages(reloadedSession.messages as unknown as Parameters<typeof sanitizeMessages>[0]);
+				agent.replaceMessages(sanitized as unknown as typeof reloadedSession.messages);
+				log.logInfo(`[${channelId}] Reloaded ${sanitized.length} messages from context`);
 			}
 
 			// Update system prompt with fresh memory, channel/user info, and skills
