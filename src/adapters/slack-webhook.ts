@@ -28,8 +28,6 @@ export class SlackWebhookAdapter extends SlackBase {
 	async start(): Promise<void> {
 		if (!this.handler) throw new Error("SlackWebhookAdapter: handler not set. Call setHandler() before start().");
 
-		await this.initMetadata();
-
 		this.server = createServer((req, res) => this.handleRequest(req, res));
 
 		await new Promise<void>((resolve) => {
@@ -38,6 +36,8 @@ export class SlackWebhookAdapter extends SlackBase {
 				resolve();
 			});
 		});
+
+		await this.initMetadata();
 
 		this.markStarted();
 	}
