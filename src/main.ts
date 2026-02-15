@@ -6,6 +6,7 @@ import { SlackSocketAdapter } from "./adapters/slack-socket.js";
 import { SlackWebhookAdapter } from "./adapters/slack-webhook.js";
 import { TelegramPollingAdapter } from "./adapters/telegram-polling.js";
 import { TelegramWebhookAdapter } from "./adapters/telegram-webhook.js";
+import { WebAdapter } from "./adapters/web.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
 import { downloadChannel } from "./download.js";
@@ -84,6 +85,9 @@ function parseArgs(): ParsedArgs {
 		}
 		if (process.env.MOM_EMAIL_TOOLS_TOKEN) {
 			adapters.push("email:webhook");
+		}
+		if (process.env.MOM_WEB_CHAT === "true") {
+			adapters.push("web");
 		}
 		// Default to slack if nothing detected
 		if (adapters.length === 0) {
@@ -193,8 +197,11 @@ function createAdapter(name: string): AdapterWithHandler {
 			const sendUrl = process.env.MOM_EMAIL_SEND_URL || "https://tinyfat.com/api/email/send";
 			return new EmailWebhookAdapter({ workingDir, toolsToken, sendUrl });
 		}
+		case "web": {
+			return new WebAdapter({ workingDir });
+		}
 		default:
-			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', or 'email:webhook'.`);
+			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', 'email:webhook', or 'web'.`);
 			process.exit(1);
 	}
 }
@@ -306,6 +313,7 @@ const DISPATCH_PATHS: Record<string, string> = {
 	"slack:webhook": "/slack/events",
 	"telegram:webhook": "/telegram/webhook",
 	"email:webhook": "/email/inbound",
+	"web": "/web/chat",
 };
 
 // Create gateway and register webhook adapters
