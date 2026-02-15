@@ -165,9 +165,15 @@ Keep responses concise and helpful.`;
 		// Stash writer so createContext can access it
 		this.pendingWriters.set(channelId, writer);
 
+		// Keep stream active during long tool/thinking phases to avoid idle SSE gaps.
+		const keepalive = setInterval(() => {
+			writer.send({ type: "heartbeat", ts: Date.now() });
+		}, 12000);
+
 		try {
 			await this.handler.handleEvent(event, this);
 		} finally {
+			clearInterval(keepalive);
 			this.pendingWriters.delete(channelId);
 			writer.done();
 		}
