@@ -214,46 +214,61 @@ When mentioning users, use @username format.`;
 	// ==========================================================================
 
 	createContext(event: MomEvent, _store: ChannelStore, isEvent?: boolean): MomContext {
-		let messageId: string | null = null;
+		// Two-message pattern:
+		//   Message 1 (status): "Thinking..." → appends tool call labels
+		//   Message 2 (response): final response text, sent as new message
+		let statusMessageId: string | null = null;
+		let responseMessageId: string | null = null;
 		let finalText = "";
 		let isWorking = true;
 		let updatePromise = Promise.resolve();
 
-		// Rolling tool call display: show last 3, count completed
-		const recentTools: string[] = []; // last 3 tool labels
-		let completedToolCount = 0;
+		const toolLabels: string[] = []; // all tool labels (append-only)
 
 		const user = this.users.get(event.user);
 		const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
 
-		// Build the working status display
-		const buildStatusDisplay = (): string => {
+		// Build the tools/status display for message 1
+		const buildToolsDisplay = (): string => {
 			const lines: string[] = [];
+			const thinkingText = eventFilename
+				? `<i>Starting event: ${escapeHtml(eventFilename)}</i>`
+				: "<i>Thinking</i>";
+			lines.push(thinkingText);
 
-			// Header: completed tool count
-			if (completedToolCount > 0) {
-				lines.push(`<i>${completedToolCount} tool call${completedToolCount > 1 ? "s" : ""} completed</i>`);
+			for (const label of toolLabels) {
+				lines.push(label);
 			}
 
-			// Show recent tools (last 3)
-			for (const tool of recentTools) {
-				lines.push(tool);
+			let display = lines.join("\n");
+
+			// Telegram 4096 char limit — truncate oldest tool labels if needed
+			while (display.length > 4000 && toolLabels.length > 1) {
+				toolLabels.shift();
+				const rebuilt = [thinkingText, ...toolLabels].join("\n");
+				display = `<i>... ${toolLabels.length} tool calls</i>\n${rebuilt}`;
 			}
 
-			if (lines.length === 0) {
-				return eventFilename ? `<i>Starting event: ${escapeHtml(eventFilename)}</i>` : "<i>Thinking</i>";
-			}
-
-			return lines.join("\n");
+			return isWorking ? display + " ..." : display;
 		};
 
-		// Update the single message
-		const updateDisplay = async () => {
-			const display = isWorking ? buildStatusDisplay() + " ..." : finalText || buildStatusDisplay();
-			if (messageId) {
-				await this.updateMessage(event.channel, messageId, display);
-			} else if (display) {
-				messageId = await this.postMessage(event.channel, display);
+		// Update message 1 (status/tools)
+		const updateStatusMessage = async () => {
+			const display = buildToolsDisplay();
+			if (statusMessageId) {
+				await this.updateMessage(event.channel, statusMessageId, display);
+			} else {
+				statusMessageId = await this.postMessage(event.channel, display);
+			}
+		};
+
+		// Send or update message 2 (response)
+		const updateResponseMessage = async () => {
+			if (!finalText) return;
+			if (responseMessageId) {
+				await this.updateMessage(event.channel, responseMessageId, finalText);
+			} else {
+				responseMessageId = await this.postMessage(event.channel, finalText);
 			}
 		};
 
@@ -273,31 +288,25 @@ When mentioning users, use @username format.`;
 
 			respond: async (text: string, shouldLog = true) => {
 				updatePromise = updatePromise.then(async () => {
-					// Tool labels (shouldLog=false, starts with _→) — track in rolling window
+					// Tool labels (shouldLog=false, starts with _→) — append to message 1
 					if (!shouldLog && text.startsWith("_→")) {
-						// Extract label: "_→ Reading file_" → "→ Reading file"
 						const label = text.replace(/^_/, "").replace(/_$/, "");
-						// Push old tools out, keep last 3
-						if (recentTools.length >= 3) {
-							recentTools.shift();
-							completedToolCount++;
-						}
-						recentTools.push(`<i>${escapeHtml(label)}</i>`);
-						await updateDisplay();
+						toolLabels.push(`<i>${escapeHtml(label)}</i>`);
+						await updateStatusMessage();
 						return;
 					}
 
-					// Status messages (shouldLog=false) — transient
+					// Status messages (shouldLog=false) — transient, update message 1
 					if (!shouldLog) {
-						await updateDisplay();
+						await updateStatusMessage();
 						return;
 					}
 
-					// Real content — accumulate
+					// Real content — accumulate in finalText, send/update message 2
 					finalText = finalText ? `${finalText}\n${text}` : text;
-					await updateDisplay();
-					if (messageId) {
-						this.logBotResponse(event.channel, text, messageId);
+					await updateResponseMessage();
+					if (responseMessageId) {
+						this.logBotResponse(event.channel, text, responseMessageId);
 					}
 				});
 				await updatePromise;
@@ -306,7 +315,8 @@ When mentioning users, use @username format.`;
 			replaceMessage: async (text: string) => {
 				updatePromise = updatePromise.then(async () => {
 					finalText = text;
-					await updateDisplay();
+					// Send or update message 2
+					await updateResponseMessage();
 				});
 				await updatePromise;
 			},
@@ -317,15 +327,15 @@ When mentioning users, use @username format.`;
 			},
 
 			setTyping: async (isTyping: boolean) => {
-				if (isTyping && !messageId) {
+				if (isTyping && !statusMessageId) {
 					updatePromise = updatePromise.then(async () => {
-						if (!messageId) {
+						if (!statusMessageId) {
 							try {
 								await this.bot.sendChatAction(Number(event.channel), "typing");
 							} catch {
 								// Ignore typing errors
 							}
-							messageId = await this.postMessage(event.channel, buildStatusDisplay() + " ...");
+							statusMessageId = await this.postMessage(event.channel, buildToolsDisplay());
 						}
 					});
 					await updatePromise;
@@ -339,21 +349,30 @@ When mentioning users, use @username format.`;
 			setWorking: async (working: boolean) => {
 				updatePromise = updatePromise.then(async () => {
 					isWorking = working;
-					// When done working, count any remaining visible tools as completed
 					if (!working) {
-						completedToolCount += recentTools.length;
-						recentTools.length = 0;
+						// If no tool calls happened, delete the status message (clean UX)
+						if (toolLabels.length === 0 && statusMessageId) {
+							await this.deleteMessage(event.channel, statusMessageId);
+							statusMessageId = null;
+						} else if (statusMessageId) {
+							// Update status message one last time (removes "..." spinner)
+							await updateStatusMessage();
+						}
 					}
-					await updateDisplay();
 				});
 				await updatePromise;
 			},
 
 			deleteMessage: async () => {
 				updatePromise = updatePromise.then(async () => {
-					if (messageId) {
-						await this.deleteMessage(event.channel, messageId);
-						messageId = null;
+					// Delete both messages (used by [SILENT] handler)
+					if (statusMessageId) {
+						await this.deleteMessage(event.channel, statusMessageId);
+						statusMessageId = null;
+					}
+					if (responseMessageId) {
+						await this.deleteMessage(event.channel, responseMessageId);
+						responseMessageId = null;
 					}
 				});
 				await updatePromise;
