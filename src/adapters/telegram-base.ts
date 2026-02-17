@@ -215,60 +215,76 @@ When mentioning users, use @username format.`;
 
 	createContext(event: MomEvent, _store: ChannelStore, isEvent?: boolean): MomContext {
 		// Two-message pattern:
-		//   Message 1 (status): "Thinking..." → appends tool call labels
-		//   Message 2 (response): final response text, sent as new message
-		let statusMessageId: string | null = null;
-		let responseMessageId: string | null = null;
-		let finalText = "";
+		//   Message 1 (working): Accumulates tool summaries AND interim text in chronological order.
+		//                        Sent on first content, then edited in place as the agent works.
+		//   Message 2 (final):   Final response text, sent as a NEW message (triggers notification).
+		let workingMessageId: string | null = null;
+		let finalMessageId: string | null = null;
 		let isWorking = true;
 		let updatePromise = Promise.resolve();
 
-		const toolLabels: string[] = []; // all tool labels (append-only)
+		// Chronological entries for the working message (tool arrows + interim text blocks)
+		const workingEntries: string[] = [];
+
+		// Throttle: minimum 300ms between edits to avoid Telegram 429s
+		let lastEditTime = 0;
+		let editTimer: ReturnType<typeof setTimeout> | null = null;
+		let editDirty = false;
 
 		const user = this.users.get(event.user);
 		const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
 
-		// Build the tools/status display for message 1
-		const buildToolsDisplay = (): string => {
-			const lines: string[] = [];
-			const thinkingText = eventFilename
-				? `<i>Starting event: ${escapeHtml(eventFilename)}</i>`
-				: "<i>Thinking</i>";
-			lines.push(thinkingText);
+		const headerLine = eventFilename
+			? `<i>Starting event: ${escapeHtml(eventFilename)}</i>`
+			: "<i>Thinking</i>";
 
-			for (const label of toolLabels) {
-				lines.push(label);
-			}
-
+		// Build the working message display from all accumulated entries
+		const buildWorkingDisplay = (): string => {
+			const lines = [headerLine, ...workingEntries];
 			let display = lines.join("\n");
 
-			// Telegram 4096 char limit — truncate oldest tool labels if needed
-			while (display.length > 4000 && toolLabels.length > 1) {
-				toolLabels.shift();
-				const rebuilt = [thinkingText, ...toolLabels].join("\n");
-				display = `<i>... ${toolLabels.length} tool calls</i>\n${rebuilt}`;
+			// Telegram 4096 char limit — trim oldest entries if needed
+			while (display.length > 4000 && workingEntries.length > 1) {
+				workingEntries.shift();
+				display = `<i>... trimmed</i>\n${[headerLine, ...workingEntries].join("\n")}`;
 			}
 
 			return isWorking ? display + " ..." : display;
 		};
 
-		// Update message 1 (status/tools)
-		const updateStatusMessage = async () => {
-			const display = buildToolsDisplay();
-			if (statusMessageId) {
-				await this.updateMessage(event.channel, statusMessageId, display);
+		// Send or edit the working message (Message 1) with throttling
+		const flushWorkingMessage = async () => {
+			const display = buildWorkingDisplay();
+			if (workingMessageId) {
+				await this.updateMessage(event.channel, workingMessageId, display);
 			} else {
-				statusMessageId = await this.postMessage(event.channel, display);
+				workingMessageId = await this.postMessage(event.channel, display);
 			}
+			lastEditTime = Date.now();
+			editDirty = false;
 		};
 
-		// Send or update message 2 (response)
-		const updateResponseMessage = async () => {
-			if (!finalText) return;
-			if (responseMessageId) {
-				await this.updateMessage(event.channel, responseMessageId, finalText);
+		const scheduleWorkingUpdate = async () => {
+			const elapsed = Date.now() - lastEditTime;
+			if (elapsed >= 300) {
+				// Enough time has passed — edit immediately
+				if (editTimer) {
+					clearTimeout(editTimer);
+					editTimer = null;
+				}
+				await flushWorkingMessage();
 			} else {
-				responseMessageId = await this.postMessage(event.channel, finalText);
+				// Mark dirty, schedule flush if not already scheduled
+				editDirty = true;
+				if (!editTimer) {
+					editTimer = setTimeout(() => {
+						editTimer = null;
+						if (editDirty) {
+							// Chain onto updatePromise so ordering is preserved
+							updatePromise = updatePromise.then(() => flushWorkingMessage());
+						}
+					}, 300 - elapsed);
+				}
 			}
 		};
 
@@ -288,25 +304,24 @@ When mentioning users, use @username format.`;
 
 			respond: async (text: string, shouldLog = true) => {
 				updatePromise = updatePromise.then(async () => {
-					// Tool labels (shouldLog=false, starts with _→) — append to message 1
+					// Tool labels (shouldLog=false, starts with _→) — append to working message
 					if (!shouldLog && text.startsWith("_→")) {
 						const label = text.replace(/^_/, "").replace(/_$/, "");
-						toolLabels.push(`<i>${escapeHtml(label)}</i>`);
-						await updateStatusMessage();
+						workingEntries.push(`<i>${escapeHtml(label)}</i>`);
+						await scheduleWorkingUpdate();
 						return;
 					}
 
-					// Status messages (shouldLog=false) — transient, update message 1
+					// Status messages (shouldLog=false) — just refresh working message
 					if (!shouldLog) {
-						await updateStatusMessage();
+						await scheduleWorkingUpdate();
 						return;
 					}
 
-					// Real content — accumulate in finalText, send/update message 2
-					finalText = finalText ? `${finalText}\n${text}` : text;
-					await updateResponseMessage();
-					if (responseMessageId) {
-						this.logBotResponse(event.channel, text, responseMessageId);
+					// Real content (shouldLog=true) — append to working message as interim text
+					if (text.trim()) {
+						workingEntries.push(escapeHtml(text));
+						await scheduleWorkingUpdate();
 					}
 				});
 				await updatePromise;
@@ -314,9 +329,10 @@ When mentioning users, use @username format.`;
 
 			replaceMessage: async (text: string) => {
 				updatePromise = updatePromise.then(async () => {
-					finalText = text;
-					// Send or update message 2
-					await updateResponseMessage();
+					// Final response — always send as a NEW message (Message 2) for notification
+					if (!text.trim()) return;
+					finalMessageId = await this.postMessage(event.channel, text);
+					this.logBotResponse(event.channel, text, finalMessageId);
 				});
 				await updatePromise;
 			},
@@ -327,15 +343,15 @@ When mentioning users, use @username format.`;
 			},
 
 			setTyping: async (isTyping: boolean) => {
-				if (isTyping && !statusMessageId) {
+				if (isTyping && !workingMessageId) {
 					updatePromise = updatePromise.then(async () => {
-						if (!statusMessageId) {
+						if (!workingMessageId) {
 							try {
 								await this.bot.sendChatAction(Number(event.channel), "typing");
 							} catch {
 								// Ignore typing errors
 							}
-							statusMessageId = await this.postMessage(event.channel, buildToolsDisplay());
+							await flushWorkingMessage();
 						}
 					});
 					await updatePromise;
@@ -350,13 +366,19 @@ When mentioning users, use @username format.`;
 				updatePromise = updatePromise.then(async () => {
 					isWorking = working;
 					if (!working) {
-						// If no tool calls happened, delete the status message (clean UX)
-						if (toolLabels.length === 0 && statusMessageId) {
-							await this.deleteMessage(event.channel, statusMessageId);
-							statusMessageId = null;
-						} else if (statusMessageId) {
-							// Update status message one last time (removes "..." spinner)
-							await updateStatusMessage();
+						// Flush any pending throttled edit
+						if (editTimer) {
+							clearTimeout(editTimer);
+							editTimer = null;
+						}
+
+						// If nothing accumulated, delete the working message (clean UX)
+						if (workingEntries.length === 0 && workingMessageId) {
+							await this.deleteMessage(event.channel, workingMessageId);
+							workingMessageId = null;
+						} else if (workingMessageId) {
+							// Final edit — removes the "..." spinner
+							await flushWorkingMessage();
 						}
 					}
 				});
@@ -366,13 +388,17 @@ When mentioning users, use @username format.`;
 			deleteMessage: async () => {
 				updatePromise = updatePromise.then(async () => {
 					// Delete both messages (used by [SILENT] handler)
-					if (statusMessageId) {
-						await this.deleteMessage(event.channel, statusMessageId);
-						statusMessageId = null;
+					if (editTimer) {
+						clearTimeout(editTimer);
+						editTimer = null;
 					}
-					if (responseMessageId) {
-						await this.deleteMessage(event.channel, responseMessageId);
-						responseMessageId = null;
+					if (workingMessageId) {
+						await this.deleteMessage(event.channel, workingMessageId);
+						workingMessageId = null;
+					}
+					if (finalMessageId) {
+						await this.deleteMessage(event.channel, finalMessageId);
+						finalMessageId = null;
 					}
 				});
 				await updatePromise;
