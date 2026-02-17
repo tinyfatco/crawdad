@@ -331,6 +331,23 @@ When mentioning users, use @username format.`;
 				updatePromise = updatePromise.then(async () => {
 					// Final response — always send as a NEW message (Message 2) for notification
 					if (!text.trim()) return;
+
+					// Remove the duplicate: the final text was already appended to the working
+					// message as an interim block. Find and remove the last non-tool entry.
+					for (let i = workingEntries.length - 1; i >= 0; i--) {
+						if (!workingEntries[i].startsWith("<i>")) {
+							workingEntries.splice(i, 1);
+							break;
+						}
+					}
+					if (workingMessageId) {
+						if (editTimer) {
+							clearTimeout(editTimer);
+							editTimer = null;
+						}
+						await flushWorkingMessage();
+					}
+
 					finalMessageId = await this.postMessage(event.channel, text);
 					this.logBotResponse(event.channel, text, finalMessageId);
 				});
