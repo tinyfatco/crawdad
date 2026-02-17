@@ -3,6 +3,7 @@ import TelegramBot from "node-telegram-bot-api";
 import { basename, join } from "path";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
+import { markdownToTelegramHtml } from "./telegram-format.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 
 // ============================================================================
@@ -24,11 +25,8 @@ type QueuedWork = () => Promise<void>;
 export abstract class TelegramBase implements PlatformAdapter {
 	readonly name = "telegram";
 	readonly maxMessageLength = 4096;
-	readonly formatInstructions = `## Text Formatting (Telegram HTML)
-Bold: <b>text</b>, Italic: <i>text</i>, Code: <code>code</code>, Block: <pre>code</pre>, Links: <a href="url">text</a>
-Strikethrough: <s>text</s>, Underline: <u>text</u>
-Do NOT use markdown formatting (* _ \` etc.) — use HTML tags only.
-
+	readonly formatInstructions = `## Text Formatting
+Use markdown: **bold**, *italic*, \`code\`, \`\`\`blocks\`\`\`, [links](url), ~~strikethrough~~.
 When mentioning users, use @username format.`;
 
 	protected bot: TelegramBot;
@@ -122,13 +120,13 @@ When mentioning users, use @username format.`;
 	// ==========================================================================
 
 	async postMessage(channel: string, text: string): Promise<string> {
-		const result = await this.bot.sendMessage(Number(channel), text, { parse_mode: "HTML" });
+		const result = await this.bot.sendMessage(Number(channel), markdownToTelegramHtml(text), { parse_mode: "HTML" });
 		return String(result.message_id);
 	}
 
 	async updateMessage(channel: string, ts: string, text: string): Promise<void> {
 		try {
-			await this.bot.editMessageText(text, {
+			await this.bot.editMessageText(markdownToTelegramHtml(text), {
 				chat_id: Number(channel),
 				message_id: Number(ts),
 				parse_mode: "HTML",
@@ -152,7 +150,7 @@ When mentioning users, use @username format.`;
 
 	async postInThread(channel: string, _threadTs: string, text: string): Promise<string> {
 		// Telegram doesn't have threads in the same way — just post as reply
-		const result = await this.bot.sendMessage(Number(channel), text, {
+		const result = await this.bot.sendMessage(Number(channel), markdownToTelegramHtml(text), {
 			reply_to_message_id: Number(_threadTs),
 			parse_mode: "HTML",
 		});
