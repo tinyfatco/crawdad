@@ -388,3 +388,93 @@ export function createEventsWatcher(workspaceDir: string, adapters: PlatformAdap
 	const eventsDir = join(workspaceDir, "events");
 	return new EventsWatcher(eventsDir, adapters);
 }
+
+// ============================================================================
+// Exported schedule helpers (used by gateway /schedule endpoint)
+// ============================================================================
+
+/**
+ * Parse a raw JSON string into a ScheduledEvent.
+ * Returns null if the content is invalid.
+ */
+export function parseEventContent(content: string): ScheduledEvent | null {
+	try {
+		const data = JSON.parse(content);
+		if (!data.type || !data.channelId || !data.text) return null;
+
+		switch (data.type) {
+			case "immediate":
+				return { type: "immediate", channelId: data.channelId, text: data.text };
+			case "one-shot":
+				if (!data.at) return null;
+				return { type: "one-shot", channelId: data.channelId, text: data.text, at: data.at };
+			case "periodic":
+				if (!data.schedule || !data.timezone) return null;
+				return { type: "periodic", channelId: data.channelId, text: data.text, schedule: data.schedule, timezone: data.timezone };
+			default:
+				return null;
+		}
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Compute the next time the container needs to wake for scheduled events.
+ * Returns only schedule metadata (timestamps, filenames) — no event content.
+ */
+export async function computeNextWakeTime(eventsDir: string): Promise<{
+	nextWake: string | null;
+	events: Array<{ file: string; type: string; nextFire: string }>;
+}> {
+	const result: Array<{ file: string; type: string; nextFire: string }> = [];
+
+	if (!existsSync(eventsDir)) {
+		return { nextWake: null, events: [] };
+	}
+
+	let files: string[];
+	try {
+		files = (await readdir(eventsDir)).filter((f) => f.endsWith(".json"));
+	} catch {
+		return { nextWake: null, events: [] };
+	}
+
+	for (const filename of files) {
+		try {
+			const content = await readFile(join(eventsDir, filename), "utf-8");
+			const event = parseEventContent(content);
+			if (!event) continue;
+
+			if (event.type === "periodic") {
+				try {
+					const cron = new Cron(event.schedule, { timezone: event.timezone });
+					const next = cron.nextRun();
+					if (next) {
+						result.push({ file: filename, type: "periodic", nextFire: next.toISOString() });
+					}
+				} catch {
+					// Invalid cron — skip
+				}
+			} else if (event.type === "one-shot") {
+				const at = new Date(event.at);
+				if (at.getTime() > Date.now()) {
+					result.push({ file: filename, type: "one-shot", nextFire: at.toISOString() });
+				}
+			}
+			// Skip immediate events — they fire on creation, not on schedule
+		} catch {
+			// Skip unreadable files
+		}
+	}
+
+	// Find earliest next fire time
+	let earliest: string | null = null;
+	for (const e of result) {
+		if (!earliest || e.nextFire < earliest) {
+			earliest = e.nextFire;
+		}
+	}
+
+	return { nextWake: earliest, events: result };
+}

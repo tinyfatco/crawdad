@@ -10,6 +10,7 @@ type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
 export class Gateway {
 	private routes = new Map<string, RouteHandler>();
+	private getRoutes = new Map<string, RouteHandler>();
 	private readyRoutes = new Set<string>();
 	private server: Server | null = null;
 
@@ -17,6 +18,12 @@ export class Gateway {
 	register(path: string, handler: RouteHandler): void {
 		this.routes.set(path, handler);
 		log.logInfo(`[gateway] registered route: POST ${path}`);
+	}
+
+	/** Register a GET route handler (e.g., "/schedule") */
+	registerGet(path: string, handler: RouteHandler): void {
+		this.getRoutes.set(path, handler);
+		log.logInfo(`[gateway] registered route: GET ${path}`);
 	}
 
 	/** Mark a route as ready to accept traffic. Until called, the route returns 503. */
@@ -33,6 +40,15 @@ export class Gateway {
 				res.writeHead(200);
 				res.end("ok");
 				return;
+			}
+
+			// GET routes (no readiness gate — always available)
+			if (req.method === "GET") {
+				const getHandler = this.getRoutes.get(req.url || "");
+				if (getHandler) {
+					getHandler(req, res);
+					return;
+				}
 			}
 
 			if (req.method !== "POST") {
@@ -59,7 +75,7 @@ export class Gateway {
 
 		await new Promise<void>((resolve) => {
 			this.server!.listen(port, () => {
-				log.logInfo(`[gateway] listening on port ${port} (${this.routes.size} routes)`);
+				log.logInfo(`[gateway] listening on port ${port} (${this.routes.size} POST + ${this.getRoutes.size} GET routes)`);
 				resolve();
 			});
 		});

@@ -10,7 +10,7 @@ import { WebAdapter } from "./adapters/web.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
 import { downloadChannel } from "./download.js";
-import { createEventsWatcher } from "./events.js";
+import { computeNextWakeTime, createEventsWatcher } from "./events.js";
 import { Gateway } from "./gateway.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
@@ -319,6 +319,21 @@ const DISPATCH_PATHS: Record<string, string> = {
 // Start gateway — binds HTTP port before adapter init so callers can
 // detect the port is up. Routes return 503 until their adapter is ready.
 const gateway = new Gateway();
+
+// Schedule endpoint — returns next wake time for scheduled events.
+// Used by crawdad-cf to set DO alarms for sleeping containers.
+gateway.registerGet("/schedule", async (_req, res) => {
+	try {
+		const eventsDir = join(workingDir, "events");
+		const schedule = await computeNextWakeTime(eventsDir);
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify(schedule));
+	} catch (err) {
+		res.writeHead(500);
+		res.end(JSON.stringify({ error: String(err) }));
+	}
+});
+
 await gateway.start(parsedArgs.port);
 
 // Register, init, and mark each adapter ready. Failures don't kill other
