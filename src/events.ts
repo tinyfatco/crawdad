@@ -39,6 +39,8 @@ export type ScheduledEvent = ImmediateEvent | OneShotEvent | PeriodicEvent;
 const DEBOUNCE_MS = 100;
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 100;
+/** Grace window for past-due one-shot events (10 minutes). Covers cold-start delay. */
+const COLD_WAKE_GRACE_MS = 10 * 60 * 1000;
 
 export class EventsWatcher {
 	private timers: Map<string, NodeJS.Timeout> = new Map();
@@ -281,8 +283,16 @@ export class EventsWatcher {
 		const now = Date.now();
 
 		if (atTime <= now) {
-			// Past - delete without executing
-			log.logInfo(`One-shot event in the past, deleting: ${filename}`);
+			const ageMs = now - atTime;
+			if (ageMs <= COLD_WAKE_GRACE_MS) {
+				// Past but within grace window — execute immediately.
+				// Covers cold-start delay where container boots after the event's target time.
+				log.logInfo(`One-shot event ${Math.round(ageMs / 1000)}s past due (within grace window), executing: ${filename}`);
+				this.execute(filename, event);
+				return;
+			}
+			// Too old — discard
+			log.logInfo(`One-shot event ${Math.round(ageMs / 1000)}s past due (beyond grace window), deleting: ${filename}`);
 			this.deleteFile(filename);
 			return;
 		}
@@ -420,10 +430,12 @@ export function parseEventContent(content: string): ScheduledEvent | null {
 }
 
 /**
- * Compute the next time the container needs to wake for scheduled events.
- * Returns only schedule metadata (timestamps, filenames) — no event content.
+ * Compute the full wake manifest for scheduled events.
+ * Returns ALL event timestamps with stable IDs (filenames) — no event content.
+ * The orchestrator stores these durably to schedule container wakes.
+ * `nextWake` is derived (earliest timestamp) for backwards compat.
  */
-export async function computeNextWakeTime(eventsDir: string): Promise<{
+export async function computeWakeManifest(eventsDir: string): Promise<{
 	nextWake: string | null;
 	events: Array<{ file: string; type: string; nextFire: string }>;
 }> {

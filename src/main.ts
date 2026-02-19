@@ -10,7 +10,7 @@ import { WebAdapter } from "./adapters/web.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
 import { downloadChannel } from "./download.js";
-import { computeNextWakeTime, createEventsWatcher } from "./events.js";
+import { computeWakeManifest, createEventsWatcher } from "./events.js";
 import { Gateway } from "./gateway.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
@@ -332,11 +332,11 @@ const DISPATCH_PATHS: Record<string, string> = {
 const gateway = new Gateway();
 
 // Schedule endpoint — returns next wake time for scheduled events.
-// Used by crawdad-cf to set DO alarms for sleeping containers.
+// Used by the orchestrator to set alarms for sleeping containers.
 gateway.registerGet("/schedule", async (_req, res) => {
 	try {
 		const eventsDir = join(workingDir, "events");
-		const schedule = await computeNextWakeTime(eventsDir);
+		const schedule = await computeWakeManifest(eventsDir);
 		res.writeHead(200, { "Content-Type": "application/json" });
 		res.end(JSON.stringify(schedule));
 	} catch (err) {
