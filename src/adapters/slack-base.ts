@@ -186,6 +186,9 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	}
 
 	enqueueEvent(event: MomEvent): boolean {
+		// Slack channel IDs start with C (channel), D (DM), or G (group)
+		if (!/^[CDG]/.test(event.channel)) return false;
+
 		const queue = this.getQueue(event.channel);
 		if (queue.size() >= 5) {
 			log.logWarning(`Event queue full for ${event.channel}, discarding: ${event.text.substring(0, 50)}`);

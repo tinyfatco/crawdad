@@ -267,9 +267,20 @@ Keep responses concise and professional. The user will receive one email with yo
 		return [];
 	}
 
-	enqueueEvent(_event: MomEvent): boolean {
-		// Email doesn't queue events — one at a time
-		return false;
+	enqueueEvent(event: MomEvent): boolean {
+		// Email channel IDs start with "email-"
+		if (!event.channel.startsWith("email-")) return false;
+
+		if (this.handler.isRunning(event.channel)) {
+			log.logInfo(`[email] Already running for ${event.channel}, discarding event`);
+			return true; // Claim it so other adapters don't grab it
+		}
+
+		log.logInfo(`Enqueueing email event for ${event.channel}: ${event.text.substring(0, 50)}`);
+		this.handler.handleEvent(event, this, true).catch((err) => {
+			log.logWarning(`[email] Event handler error for ${event.channel}`, err instanceof Error ? err.message : String(err));
+		});
+		return true;
 	}
 
 	// ==========================================================================

@@ -197,6 +197,9 @@ When mentioning users, use @username format.`;
 	}
 
 	enqueueEvent(event: MomEvent): boolean {
+		// Telegram chat IDs are numeric (positive for users, negative for groups)
+		if (!/^-?\d+$/.test(event.channel)) return false;
+
 		const queue = this.queues.get(event.channel) || [];
 		if (queue.length >= 5) {
 			log.logWarning(`Event queue full for ${event.channel}, discarding: ${event.text.substring(0, 50)}`);

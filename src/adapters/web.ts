@@ -239,6 +239,7 @@ Keep responses concise and helpful.`;
 	}
 
 	enqueueEvent(_event: MomEvent): boolean {
+		// Web chat requires an active SSE connection — can't deliver scheduled events
 		return false;
 	}
 
