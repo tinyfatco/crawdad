@@ -103,7 +103,7 @@ function getMemory(channelDir: string): string {
 	return parts.join("\n\n");
 }
 
-function loadMomSkills(channelDir: string, workspacePath: string): Skill[] {
+function loadMomSkills(channelDir: string, workspacePath: string, extraSkillsDirs: string[] = []): Skill[] {
 	const skillMap = new Map<string, Skill>();
 
 	// channelDir is the host path (e.g., /Users/.../data/C0A34FL8PMH)
@@ -119,7 +119,15 @@ function loadMomSkills(channelDir: string, workspacePath: string): Skill[] {
 		return hostPath;
 	};
 
-	// Load workspace-level skills (global)
+	// Load extra skills dirs first (lowest priority — e.g. platform skills via --skills)
+	for (const dir of extraSkillsDirs) {
+		for (const skill of loadSkillsFromDir({ dir, source: "system" }).skills) {
+			// Extra skills dirs use absolute paths (not translated — they're on the image filesystem)
+			skillMap.set(skill.name, skill);
+		}
+	}
+
+	// Load workspace-level skills (global) — overrides system skills on collision
 	const workspaceSkillsDir = join(hostWorkspacePath, "skills");
 	for (const skill of loadSkillsFromDir({ dir: workspaceSkillsDir, source: "workspace" }).skills) {
 		// Translate paths to container paths for system prompt
@@ -399,11 +407,12 @@ export function getOrCreateRunner(
 	channelId: string,
 	channelDir: string,
 	formatInstructions: string,
+	extraSkillsDirs: string[] = [],
 ): AgentRunner {
 	const existing = channelRunners.get(channelId);
 	if (existing) return existing;
 
-	const runner = createRunner(sandboxConfig, channelId, channelDir, formatInstructions);
+	const runner = createRunner(sandboxConfig, channelId, channelDir, formatInstructions, extraSkillsDirs);
 	channelRunners.set(channelId, runner);
 	return runner;
 }
@@ -417,6 +426,7 @@ function createRunner(
 	channelId: string,
 	channelDir: string,
 	formatInstructions: string,
+	extraSkillsDirs: string[] = [],
 ): AgentRunner {
 	const executor = createExecutor(sandboxConfig);
 	const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
@@ -426,7 +436,7 @@ function createRunner(
 
 	// Initial system prompt (will be updated each run with fresh memory/channels/users/skills)
 	const memory = getMemory(channelDir);
-	const skills = loadMomSkills(channelDir, workspacePath);
+	const skills = loadMomSkills(channelDir, workspacePath, extraSkillsDirs);
 	const systemPrompt = buildSystemPrompt(
 		workspacePath,
 		channelId,
@@ -684,7 +694,7 @@ function createRunner(
 
 			// Update system prompt with fresh memory, channel/user info, and skills
 			const memory = getMemory(channelDir);
-			const skills = loadMomSkills(channelDir, workspacePath);
+			const skills = loadMomSkills(channelDir, workspacePath, extraSkillsDirs);
 			const systemPrompt = buildSystemPrompt(
 				workspacePath,
 				channelId,

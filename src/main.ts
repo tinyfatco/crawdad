@@ -26,6 +26,7 @@ interface ParsedArgs {
 	downloadChannel?: string;
 	adapters: string[];
 	port: number;
+	skillsDirs: string[];
 }
 
 function parseArgs(): ParsedArgs {
@@ -35,6 +36,7 @@ function parseArgs(): ParsedArgs {
 	let downloadChannelId: string | undefined;
 	let adapterArg: string | undefined;
 	let port: number | undefined;
+	const skillsDirs: string[] = [];
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
@@ -54,6 +56,10 @@ function parseArgs(): ParsedArgs {
 			port = parseInt(arg.slice("--port=".length), 10);
 		} else if (arg === "--port") {
 			port = parseInt(args[++i] || "", 10);
+		} else if (arg.startsWith("--skills=")) {
+			skillsDirs.push(resolve(arg.slice("--skills=".length)));
+		} else if (arg === "--skills") {
+			skillsDirs.push(resolve(args[++i] || ""));
 		} else if (!arg.startsWith("-")) {
 			workingDir = arg;
 		}
@@ -103,6 +109,7 @@ function parseArgs(): ParsedArgs {
 		downloadChannel: downloadChannelId,
 		adapters,
 		port: resolvedPort,
+		skillsDirs,
 	};
 }
 
@@ -121,9 +128,10 @@ if (parsedArgs.downloadChannel) {
 
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
-	console.error("Usage: mom [--sandbox=host|docker:<name>] [--adapter=slack:socket,telegram:webhook] [--port=3000] <working-directory>");
+	console.error("Usage: mom [--sandbox=host|docker:<name>] [--adapter=slack:socket,telegram:webhook] [--port=3000] [--skills=<dir>] <working-directory>");
 	console.error("       mom --download <channel-id>");
 	console.error("       Adapters: slack (=slack:socket), slack:webhook, telegram (=telegram:polling), telegram:webhook");
+	console.error("       --skills: Additional skills directory to scan (can be specified multiple times)");
 	console.error("       (omit --adapter to auto-detect from env vars)");
 	process.exit(1);
 }
@@ -228,7 +236,7 @@ function getState(channelId: string, formatInstructions: string): ChannelState {
 		const channelDir = join(workingDir, channelId);
 		state = {
 			running: false,
-			runner: getOrCreateRunner(sandbox, channelId, channelDir, formatInstructions),
+			runner: getOrCreateRunner(sandbox, channelId, channelDir, formatInstructions, parsedArgs.skillsDirs),
 			store: new ChannelStore({ workingDir, botToken: process.env.MOM_SLACK_BOT_TOKEN || "" }),
 			stopRequested: false,
 		};
@@ -303,6 +311,9 @@ const handler: MomHandler = {
 
 log.logStartup(workingDir, sandbox.type === "host" ? "host" : `docker:${sandbox.container}`);
 log.logInfo(`Adapters: ${parsedArgs.adapters.join(", ")}`);
+if (parsedArgs.skillsDirs.length > 0) {
+	log.logInfo(`Extra skills dirs: ${parsedArgs.skillsDirs.join(", ")}`);
+}
 
 for (const adapter of adapters) {
 	adapter.setHandler(handler);
