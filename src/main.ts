@@ -2,6 +2,7 @@
 
 import { join, resolve } from "path";
 import { EmailWebhookAdapter } from "./adapters/email-webhook.js";
+import { HeartbeatAdapter } from "./adapters/heartbeat.js";
 import { SlackSocketAdapter } from "./adapters/slack-socket.js";
 import { SlackWebhookAdapter } from "./adapters/slack-webhook.js";
 import { TelegramPollingAdapter } from "./adapters/telegram-polling.js";
@@ -216,6 +217,9 @@ function createAdapter(name: string): AdapterWithHandler {
 
 const adapters: AdapterWithHandler[] = parsedArgs.adapters.map(createAdapter);
 
+// Create heartbeat adapter — lives alongside other adapters but is purely internal
+const heartbeatAdapter = new HeartbeatAdapter({ workingDir });
+
 // ============================================================================
 // State (per channel)
 // ============================================================================
@@ -234,9 +238,11 @@ function getState(channelId: string, formatInstructions: string): ChannelState {
 	let state = channelStates.get(channelId);
 	if (!state) {
 		const channelDir = join(workingDir, channelId);
+		// Inject send_message tool for heartbeat channel
+		const extraTools = channelId === "_heartbeat" ? [heartbeatAdapter.createSendMessageTool()] : [];
 		state = {
 			running: false,
-			runner: getOrCreateRunner(sandbox, channelId, channelDir, formatInstructions, parsedArgs.skillsDirs),
+			runner: getOrCreateRunner(sandbox, channelId, channelDir, formatInstructions, parsedArgs.skillsDirs, extraTools),
 			store: new ChannelStore({ workingDir, botToken: process.env.MOM_SLACK_BOT_TOKEN || "" }),
 			stopRequested: false,
 		};
@@ -319,6 +325,13 @@ for (const adapter of adapters) {
 	adapter.setHandler(handler);
 }
 
+// Wire up heartbeat adapter — give it handler + references to all channel adapters
+heartbeatAdapter.setHandler(handler);
+heartbeatAdapter.setOtherAdapters(adapters);
+
+// All adapters including heartbeat — EventsWatcher iterates this to route events
+const allAdapters: PlatformAdapter[] = [...adapters, heartbeatAdapter];
+
 // Route map: webhook adapters register their dispatch path with the gateway
 const DISPATCH_PATHS: Record<string, string> = {
 	"slack:webhook": "/slack/events",
@@ -369,7 +382,8 @@ for (let i = 0; i < adapters.length; i++) {
 }
 
 // Start events watcher AFTER adapters (may block on slow FS)
-const eventsWatcher = createEventsWatcher(workingDir, adapters);
+// Uses allAdapters so heartbeat events (_heartbeat channelId) get routed correctly
+const eventsWatcher = createEventsWatcher(workingDir, allAdapters);
 eventsWatcher.start();
 
 // Handle shutdown

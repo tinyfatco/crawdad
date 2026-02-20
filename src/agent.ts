@@ -1,4 +1,4 @@
-import { Agent, type AgentEvent } from "@mariozechner/pi-agent-core";
+import { Agent, type AgentEvent, type AgentTool } from "@mariozechner/pi-agent-core";
 import { getModel, type ImageContent } from "@mariozechner/pi-ai";
 import {
 	AgentSession,
@@ -408,11 +408,12 @@ export function getOrCreateRunner(
 	channelDir: string,
 	formatInstructions: string,
 	extraSkillsDirs: string[] = [],
+	extraTools: AgentTool<any>[] = [],
 ): AgentRunner {
 	const existing = channelRunners.get(channelId);
 	if (existing) return existing;
 
-	const runner = createRunner(sandboxConfig, channelId, channelDir, formatInstructions, extraSkillsDirs);
+	const runner = createRunner(sandboxConfig, channelId, channelDir, formatInstructions, extraSkillsDirs, extraTools);
 	channelRunners.set(channelId, runner);
 	return runner;
 }
@@ -427,12 +428,13 @@ function createRunner(
 	channelDir: string,
 	formatInstructions: string,
 	extraSkillsDirs: string[] = [],
+	extraTools: AgentTool<any>[] = [],
 ): AgentRunner {
 	const executor = createExecutor(sandboxConfig);
 	const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
 
-	// Create tools
-	const tools = createMomTools(executor);
+	// Create tools (core + any extras like heartbeat's send_message)
+	const tools = [...createMomTools(executor), ...extraTools];
 
 	// Initial system prompt (will be updated each run with fresh memory/channels/users/skills)
 	const memory = getMemory(channelDir);
