@@ -185,6 +185,7 @@ ${envDescription}
 ## Workspace Layout
 ${workspacePath}/
 ├── MEMORY.md                    # Global memory (all channels)
+├── settings.json                # Model & preferences (see below)
 ├── skills/                      # Global CLI tools you create
 └── ${channelId}/                # This channel
     ├── MEMORY.md                # Channel-specific memory
@@ -192,6 +193,17 @@ ${workspacePath}/
     ├── attachments/             # User-shared files
     ├── scratch/                 # Your working directory
     └── skills/                  # Channel-specific tools
+
+## Model Selection
+You can switch which AI model you use. To change, write to \`${workspacePath}/settings.json\`:
+\`\`\`bash
+cat ${workspacePath}/settings.json  # see current
+# To switch model:
+cat > ${workspacePath}/settings.json << 'SETTINGS'
+{"defaultProvider":"anthropic","defaultModel":"claude-sonnet-4-6"}
+SETTINGS
+\`\`\`
+The change takes effect on the next message. Users can also type \`/model <name>\` directly.
 
 ## Skills (Custom CLI Tools)
 You can create reusable CLI tools for recurring tasks (email, APIs, data processing, etc.).
