@@ -4,7 +4,8 @@
 	"description": "Mom, liberated. Multi-platform AI agent runtime.",
 	"type": "module",
 	"bin": {
-		"troublemaker": "dist/main.js"
+		"troublemaker": "dist/main.js",
+    "crawdad": "dist/main.js"
 	},
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
