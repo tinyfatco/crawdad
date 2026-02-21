@@ -1,5 +1,5 @@
 import { Agent, type AgentEvent, type AgentTool } from "@mariozechner/pi-agent-core";
-import { getModel, type ImageContent } from "@mariozechner/pi-ai";
+import { type ImageContent } from "@mariozechner/pi-ai";
 import {
 	AgentSession,
 	AuthStorage,
@@ -19,18 +19,15 @@ import { join } from "path";
 import type { ChannelInfo, MomContext, UserInfo } from "./adapters/types.js";
 import { MomSettingsManager, syncLogToSessionManager } from "./context.js";
 import * as log from "./log.js";
+import { resolveModel, resolveApiKey } from "./model-config.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 
-// Hardcoded model for now - TODO: make configurable (issue #63)
-const model = getModel("anthropic", "claude-sonnet-4-5");
-
-// Allow overriding the API base URL (e.g. to route through TinyFat proxy)
-if (model && process.env.ANTHROPIC_BASE_URL) {
-	(model as any).baseUrl = process.env.ANTHROPIC_BASE_URL;
-}
+// Resolve model from env vars (MOM_MODEL_PROVIDER + MOM_MODEL_ID)
+// Falls back to anthropic/claude-sonnet-4-5
+const model = resolveModel();
 
 export interface PendingMessage {
 	userName: string;
@@ -48,17 +45,6 @@ export interface AgentRunner {
 	abort(): void;
 }
 
-async function getAnthropicApiKey(authStorage: AuthStorage): Promise<string> {
-	const key = await authStorage.getApiKey("anthropic");
-	if (!key) {
-		throw new Error(
-			"No API key found for anthropic.\n\n" +
-				"Set an API key environment variable, or use /login with Anthropic and link to auth.json from " +
-				join(homedir(), ".pi", "mom", "auth.json"),
-		);
-	}
-	return key;
-}
 
 const IMAGE_MIME_TYPES: Record<string, string> = {
 	jpg: "image/jpeg",
@@ -466,7 +452,7 @@ function createRunner(
 	const authStorage = new AuthStorage(join(homedir(), ".pi", "mom", "auth.json"));
 	const modelRegistry = new ModelRegistry(authStorage);
 
-	// Create agent
+	// Create agent — getApiKey is provider-generic (resolves via AuthStorage for any provider)
 	const agent = new Agent({
 		initialState: {
 			systemPrompt,
@@ -475,7 +461,7 @@ function createRunner(
 			tools,
 		},
 		convertToLlm,
-		getApiKey: async () => getAnthropicApiKey(authStorage),
+		getApiKey: async (provider: string) => resolveApiKey(authStorage, provider),
 	});
 
 	// Load existing messages
