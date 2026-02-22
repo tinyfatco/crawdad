@@ -208,66 +208,60 @@ Keep responses concise and professional. The user will receive one email with yo
 		// Cross-channel send: channel format is "email-{address}"
 		const emailMatch = channel.match(/^email-(.+)$/);
 		if (!emailMatch) {
-			log.logWarning(`[email] postMessage called with non-email channel: ${channel}`);
-			return String(Date.now());
+			throw new Error(`postMessage called with non-email channel: ${channel}`);
 		}
 
 		const toAddress = emailMatch[1];
 		log.logInfo(`[email] Sending outbound to ${toAddress}${attachments?.length ? ` with ${attachments.length} attachment(s)` : ""}`);
 
-		try {
-			let response: Response;
-			const emailMetadata = {
-				to: toAddress,
-				subject: "Message from your agent",
-				body: text,
-			};
+		const emailMetadata = {
+			to: toAddress,
+			subject: "Message from your agent",
+			body: text,
+		};
 
-			if (attachments && attachments.length > 0) {
-				// Use multipart/form-data for emails with attachments
-				log.logInfo(`[email] Using multipart for ${attachments.length} attachment(s): ${attachments.map((a) => a.filename).join(", ")}`);
+		let response: Response;
 
-				const form = new FormData();
-				form.append("metadata", JSON.stringify(emailMetadata));
+		if (attachments && attachments.length > 0) {
+			// Use multipart/form-data for emails with attachments
+			log.logInfo(`[email] Using multipart for ${attachments.length} attachment(s): ${attachments.map((a) => a.filename).join(", ")}`);
 
-				for (const att of attachments) {
-					const buffer = readFileSync(att.filePath);
-					form.append("attachments", new Blob([buffer]), att.filename);
-					log.logInfo(`[email] Attached: ${att.filename} (${buffer.length} bytes)`);
-				}
+			const form = new FormData();
+			form.append("metadata", JSON.stringify(emailMetadata));
 
-				response = await fetch(this.sendUrl, {
-					method: "POST",
-					headers: {
-						Authorization: `Bearer ${this.toolsToken}`,
-					},
-					body: form,
-				});
-			} else {
-				// No attachments — simple JSON
-				response = await fetch(this.sendUrl, {
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-						Authorization: `Bearer ${this.toolsToken}`,
-					},
-					body: JSON.stringify(emailMetadata),
-				});
+			for (const att of attachments) {
+				const buffer = readFileSync(att.filePath);
+				form.append("attachments", new Blob([buffer]), att.filename);
+				log.logInfo(`[email] Attached: ${att.filename} (${buffer.length} bytes)`);
 			}
 
-			if (!response.ok) {
-				const errorText = await response.text();
-				log.logWarning(`[email] Outbound send failed: ${response.status}`, errorText);
-				return String(Date.now());
-			}
-
-			const result = (await response.json()) as { ok: boolean; messageId?: string };
-			log.logInfo(`[email] Outbound sent: messageId=${result.messageId}`);
-			return result.messageId || String(Date.now());
-		} catch (err) {
-			log.logWarning("[email] Outbound send error", err instanceof Error ? err.message : String(err));
-			return String(Date.now());
+			response = await fetch(this.sendUrl, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${this.toolsToken}`,
+				},
+				body: form,
+			});
+		} else {
+			// No attachments — simple JSON
+			response = await fetch(this.sendUrl, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${this.toolsToken}`,
+				},
+				body: JSON.stringify(emailMetadata),
+			});
 		}
+
+		if (!response.ok) {
+			const errorText = await response.text();
+			throw new Error(`Email send failed (${response.status}): ${errorText}`);
+		}
+
+		const result = (await response.json()) as { ok: boolean; messageId?: string };
+		log.logInfo(`[email] Outbound sent: messageId=${result.messageId}`);
+		return result.messageId || String(Date.now());
 	}
 
 	async updateMessage(_channel: string, _ts: string, _text: string): Promise<void> {
