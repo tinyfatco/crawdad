@@ -205,45 +205,8 @@ SETTINGS
 \`\`\`
 The change takes effect on the next message. Users can also type \`/model <name>\` directly.
 
-## Secrets Persistence
-You can persist secrets (API tokens, credentials) so they survive container restarts.
-Use \`FAT_TOOLS_TOKEN\` to authenticate:
-\`\`\`bash
-curl -s -X PATCH https://tinyfat.com/api/agent/secrets \\
-  -H "Authorization: Bearer $FAT_TOOLS_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{"key_name": "secret_value"}'
-\`\`\`
-Known keys that get special handling on boot:
-- \`gh_token\` — Sets \`GH_TOKEN\` env var + writes \`~/.config/gh/hosts.yml\`
-- \`openai_key\` — Sets \`OPENAI_API_KEY\` env var
-- \`google_api_key\` — Sets \`GOOGLE_API_KEY\` env var
-- Any key prefixed with \`env_\` becomes an env var (e.g. \`env_MY_KEY\` → \`MY_KEY\`)
-
-## Contacts Management
-You can manage your email contacts (who can email you, who you can email).
-Use \`FAT_TOOLS_TOKEN\` to authenticate:
-\`\`\`bash
-# List contacts
-curl -s https://tinyfat.com/api/agent/contacts \\
-  -H "Authorization: Bearer $FAT_TOOLS_TOKEN"
-
-# Add a contact (opens both inbound + outbound)
-curl -s -X POST https://tinyfat.com/api/agent/contacts \\
-  -H "Authorization: Bearer $FAT_TOOLS_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{"email": "person@example.com"}'
-
-# Add entire domain
-curl -s -X POST https://tinyfat.com/api/agent/contacts \\
-  -H "Authorization: Bearer $FAT_TOOLS_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{"email": "@example.com", "match_type": "domain"}'
-
-# Remove a contact
-curl -s -X DELETE "https://tinyfat.com/api/agent/contacts?email=person@example.com" \\
-  -H "Authorization: Bearer $FAT_TOOLS_TOKEN"
-\`\`\`
+## Platform APIs
+If \`FAT_TOOLS_TOKEN\` is set, you have access to platform APIs for secrets persistence, contacts/whitelist management, and more. Check your loaded skills for platform-specific API documentation.
 
 ## Skills (Custom CLI Tools)
 You can create reusable CLI tools for recurring tasks (email, APIs, data processing, etc.).
