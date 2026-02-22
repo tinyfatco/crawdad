@@ -4,6 +4,7 @@ import { basename, join } from "path";
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
+import { markdownToSlackMrkdwn } from "./slack-format.js";
 
 // ============================================================================
 // Slack-specific types (internal to adapter)
@@ -140,12 +141,12 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	}
 
 	async postMessage(channel: string, text: string): Promise<string> {
-		const result = await this.webClient.chat.postMessage({ channel, text });
+		const result = await this.webClient.chat.postMessage({ channel, text: markdownToSlackMrkdwn(text) });
 		return result.ts as string;
 	}
 
 	async updateMessage(channel: string, ts: string, text: string): Promise<void> {
-		await this.webClient.chat.update({ channel, ts, text });
+		await this.webClient.chat.update({ channel, ts, text: markdownToSlackMrkdwn(text) });
 	}
 
 	async deleteMessage(channel: string, ts: string): Promise<void> {
@@ -153,7 +154,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	}
 
 	async postInThread(channel: string, threadTs: string, text: string): Promise<string> {
-		const result = await this.webClient.chat.postMessage({ channel, thread_ts: threadTs, text });
+		const result = await this.webClient.chat.postMessage({ channel, thread_ts: threadTs, text: markdownToSlackMrkdwn(text) });
 		return result.ts as string;
 	}
 
