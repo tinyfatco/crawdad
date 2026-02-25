@@ -601,6 +601,25 @@ function createRunner(
 			if (agentEvent.message.role === "assistant") {
 				log.logResponseStart(logCtx);
 			}
+		} else if (event.type === "message_update") {
+			const agentEvent = event as AgentEvent & { type: "message_update" };
+			const streamEvent = agentEvent.assistantMessageEvent;
+			if (streamEvent.type === "text_delta") {
+				// Extract accumulated text from the partial message
+				const textParts: string[] = [];
+				for (const part of streamEvent.partial.content) {
+					if (part.type === "text") {
+						textParts.push((part as any).text);
+					}
+				}
+				const accumulatedText = textParts.join("");
+				if (accumulatedText.trim()) {
+					queue.enqueue(
+						() => ctx.respond(`__STREAM__${accumulatedText}`, false),
+						"stream update",
+					);
+				}
+			}
 		} else if (event.type === "message_end") {
 			const agentEvent = event as AgentEvent & { type: "message_end" };
 			if (agentEvent.message.role === "assistant") {
