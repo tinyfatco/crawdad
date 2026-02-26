@@ -1,8 +1,8 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import TelegramBot from "node-telegram-bot-api";
 import { basename, join } from "path";
 import * as log from "../log.js";
-import type { ChannelStore } from "../store.js";
+import type { Attachment, ChannelStore } from "../store.js";
 import { markdownToTelegramHtml } from "./telegram-format.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 
@@ -63,7 +63,8 @@ When mentioning users, use @username format.`;
 	// ==========================================================================
 
 	protected handleIncomingMessage(msg: TelegramBot.Message): void {
-		if (!msg.text || msg.from?.is_bot) return;
+		const hasMedia = !!(msg.voice || msg.audio || msg.document || msg.photo || msg.video || msg.video_note);
+		if ((!msg.text && !msg.caption && !hasMedia) || msg.from?.is_bot) return;
 
 		const chatId = String(msg.chat.id);
 		const userId = String(msg.from!.id);
@@ -77,12 +78,55 @@ When mentioning users, use @username format.`;
 		const chatName = msg.chat.title || (msg.chat.type === "private" ? `DM:${userName}` : chatId);
 		this.channels.set(chatId, { id: chatId, name: chatName });
 
+		// Extract text: prefer text, fall back to caption, then synthesize from media type
+		const text = msg.text || msg.caption || this.describeMedia(msg);
+
+		// Download media files async, then dispatch event
+		this.processMessageWithMedia(msg, chatId, userId, userName, displayName, text).catch((err) => {
+			log.logWarning("Failed to process Telegram message with media", err instanceof Error ? err.message : String(err));
+		});
+	}
+
+	private describeMedia(msg: TelegramBot.Message): string {
+		if (msg.voice) return "[Voice message]";
+		if (msg.audio) return `[Audio: ${msg.audio.title || "audio"}]`;
+		if (msg.video_note) return "[Video message]";
+		if (msg.video) return "[Video]";
+		if (msg.document) return `[File: ${msg.document.file_name || "document"}]`;
+		if (msg.photo) return "[Photo]";
+		return "[Media]";
+	}
+
+	private async processMessageWithMedia(
+		msg: TelegramBot.Message,
+		chatId: string,
+		userId: string,
+		userName: string,
+		displayName: string,
+		text: string,
+	): Promise<void> {
+		// Download any attached media
+		const attachments: Attachment[] = [];
+		const fileInfo = this.extractFileInfo(msg);
+
+		if (fileInfo) {
+			try {
+				const localPath = await this.downloadTelegramFile(chatId, fileInfo.fileId, fileInfo.fileName, String(msg.date));
+				attachments.push({ original: fileInfo.fileName, local: localPath });
+				log.logInfo(`[telegram] Downloaded ${fileInfo.fileName} → ${localPath}`);
+			} catch (err) {
+				const errMsg = err instanceof Error ? err.message : String(err);
+				log.logWarning(`[telegram] Failed to download file`, errMsg);
+			}
+		}
+
 		const momEvent: MomEvent = {
 			type: msg.chat.type === "private" ? "dm" : "mention",
 			channel: chatId,
 			ts: String(msg.date),
 			user: userId,
-			text: msg.text,
+			text,
+			attachments,
 		};
 
 		// Log user message
@@ -92,13 +136,13 @@ When mentioning users, use @username format.`;
 			user: userId,
 			userName,
 			displayName,
-			text: msg.text,
-			attachments: [],
+			text,
+			attachments,
 			isBot: false,
 		});
 
 		// Check for stop
-		if (msg.text.toLowerCase().trim() === "stop") {
+		if (text.toLowerCase().trim() === "stop") {
 			if (this.handler.isRunning(chatId)) {
 				this.handler.handleStop(chatId, this);
 			} else {
@@ -113,6 +157,57 @@ When mentioning users, use @username format.`;
 		} else {
 			this.enqueueWork(chatId, () => this.handler.handleEvent(momEvent, this));
 		}
+	}
+
+	private extractFileInfo(msg: TelegramBot.Message): { fileId: string; fileName: string } | null {
+		if (msg.voice) {
+			return { fileId: msg.voice.file_id, fileName: "voice.ogg" };
+		}
+		if (msg.audio) {
+			// Types don't include file_name but Telegram API sends it
+			return { fileId: msg.audio.file_id, fileName: (msg.audio as any).file_name || msg.audio.title || "audio.mp3" };
+		}
+		if (msg.video_note) {
+			return { fileId: msg.video_note.file_id, fileName: "video_note.mp4" };
+		}
+		if (msg.video) {
+			// Types don't include file_name but Telegram API sends it
+			return { fileId: msg.video.file_id, fileName: (msg.video as any).file_name || "video.mp4" };
+		}
+		if (msg.document) {
+			return { fileId: msg.document.file_id, fileName: msg.document.file_name || "document" };
+		}
+		if (msg.photo && msg.photo.length > 0) {
+			// Use the largest photo (last in array)
+			const largest = msg.photo[msg.photo.length - 1];
+			return { fileId: largest.file_id, fileName: "photo.jpg" };
+		}
+		return null;
+	}
+
+	private async downloadTelegramFile(chatId: string, fileId: string, fileName: string, timestamp: string): Promise<string> {
+		const fileUrl = await this.bot.getFileLink(fileId);
+
+		const response = await fetch(fileUrl);
+		if (!response.ok) {
+			throw new Error(`Telegram file download failed: HTTP ${response.status}`);
+		}
+
+		const buffer = Buffer.from(await response.arrayBuffer());
+
+		// Save to channel attachments dir
+		const ts = Math.floor(parseFloat(timestamp) * 1000) || Date.now();
+		const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+		const localFileName = `${ts}_${sanitized}`;
+		const relativePath = `${chatId}/attachments/${localFileName}`;
+		const fullPath = join(this.workingDir, relativePath);
+
+		const dir = join(this.workingDir, chatId, "attachments");
+		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+		writeFileSync(fullPath, buffer);
+
+		return relativePath;
 	}
 
 	// ==========================================================================
