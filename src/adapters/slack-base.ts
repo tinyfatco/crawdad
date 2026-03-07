@@ -112,7 +112,11 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		await Promise.all([this.fetchUsers(), this.fetchChannels()]);
 		log.logInfo(`Loaded ${this.channels.size} channels, ${this.users.size} users`);
 
-		await this.backfillAllChannels();
+		// Backfill runs in background — don't block adapter startup.
+		// The adapter is functional without backfill; it only adds historical messages.
+		this.backfillAllChannels().catch((err) => {
+			log.logWarning("Background backfill failed", err instanceof Error ? err.message : String(err));
+		});
 	}
 
 	protected markStarted(): void {

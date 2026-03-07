@@ -384,8 +384,8 @@ gateway.registerGet("/schedule", async (_req, res) => {
 await gateway.start(parsedArgs.port);
 log.logInfo(`[perf] gateway listening: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
-// Register, init, and mark each adapter ready. Failures don't kill other
-// adapters — failed routes stay registered but never marked ready (permanent 503).
+// Register routes first (so gateway can accept traffic), then start adapters in parallel.
+// Each adapter starts independently — a slow Slack backfill doesn't block Telegram.
 for (let i = 0; i < adapters.length; i++) {
 	const adapter = adapters[i];
 	const adapterName = parsedArgs.adapters[i];
@@ -394,17 +394,23 @@ for (let i = 0; i < adapters.length; i++) {
 	if (path && adapter.dispatch) {
 		gateway.register(path, (req, res) => adapter.dispatch!(req, res));
 	}
+}
 
+await Promise.all(adapters.map(async (adapter, i) => {
+	const adapterName = parsedArgs.adapters[i];
+	const path = DISPATCH_PATHS[adapterName];
+	const t = performance.now();
 	try {
 		await adapter.start();
 		if (path) {
 			gateway.markReady(path);
 		}
+		log.logInfo(`[perf] ${adapter.name} started: ${(performance.now() - t).toFixed(0)}ms`);
 	} catch (err) {
 		log.logWarning(`[${adapter.name}] adapter.start() failed, skipping: ${err instanceof Error ? err.message : String(err)}`);
 	}
-}
-log.logInfo(`[perf] adapters started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
+}));
+log.logInfo(`[perf] all adapters started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
 // Start events watcher AFTER adapters (may block on slow FS)
 // Uses allAdapters so heartbeat events (_heartbeat channelId) get routed correctly
