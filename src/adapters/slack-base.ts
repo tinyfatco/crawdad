@@ -209,71 +209,18 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	// ==========================================================================
 
 	createContext(event: MomEvent, _store: ChannelStore, isEvent?: boolean): MomContext {
-		// Single-message pattern:
-		//   While working: "_Thinking_" header + tool arrows, edited in place.
-		//   On final: tool arrows (no header) + blank line + response text.
-		//   Thread replies go under the same message.
 		let messageTs: string | null = null;
 		const threadMessageTs: string[] = [];
+		let accumulatedText = "";
 		let isWorking = true;
+		const workingIndicator = " ...";
 		let updatePromise = Promise.resolve();
 
-		// Tool arrow entries shown at top of message
-		const workingEntries: string[] = [];
-
-		// Edit throttling: min 300ms between edits to avoid rate limits
-		let lastEditTime = 0;
-		let editTimer: ReturnType<typeof setTimeout> | null = null;
-		let editDirty = false;
+		// Track tool arrows separately so replaceMessage can preserve them
+		const toolEntries: string[] = [];
 
 		const user = this.users.get(event.user);
 		const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
-
-		const headerLine = eventFilename ? `_Starting event: ${eventFilename}_` : "_Thinking_";
-
-		const buildWorkingDisplay = (): string => {
-			const lines = [headerLine, ...workingEntries];
-			let display = lines.join("\n");
-
-			while (display.length > 3900 && workingEntries.length > 1) {
-				workingEntries.shift();
-				display = [headerLine, "_... trimmed_", ...workingEntries].join("\n");
-			}
-
-			return isWorking ? display + " ..." : display;
-		};
-
-		const flushMessage = async () => {
-			const display = buildWorkingDisplay();
-			if (messageTs) {
-				await this.updateMessage(event.channel, messageTs, display);
-			} else {
-				messageTs = await this.postMessage(event.channel, display);
-			}
-			lastEditTime = Date.now();
-			editDirty = false;
-		};
-
-		const scheduleUpdate = async () => {
-			const elapsed = Date.now() - lastEditTime;
-			if (elapsed >= 300) {
-				if (editTimer) {
-					clearTimeout(editTimer);
-					editTimer = null;
-				}
-				await flushMessage();
-			} else {
-				editDirty = true;
-				if (!editTimer) {
-					editTimer = setTimeout(() => {
-						editTimer = null;
-						if (editDirty) {
-							updatePromise = updatePromise.then(() => flushMessage());
-						}
-					}, 300 - elapsed);
-				}
-			}
-		};
 
 		return {
 			message: {
@@ -291,49 +238,38 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 
 			respond: async (text: string, shouldLog = true) => {
 				updatePromise = updatePromise.then(async () => {
-					// Tool labels (shouldLog=false, starts with _→) → append to working entries
+					// Capture tool arrows so replaceMessage can preserve them
 					if (!shouldLog && text.startsWith("_→")) {
-						workingEntries.push(text);
-						await scheduleUpdate();
-						return;
+						toolEntries.push(text);
 					}
 
-					// Other status messages (shouldLog=false) → refresh display
-					if (!shouldLog) {
-						await scheduleUpdate();
-						return;
+					accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
+					const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
+
+					if (messageTs) {
+						await this.updateMessage(event.channel, messageTs, displayText);
+					} else {
+						messageTs = await this.postMessage(event.channel, displayText);
 					}
 
-					// Real content (shouldLog=true) — ignored here, replaceMessage handles final text
+					if (shouldLog && messageTs) {
+						this.logBotResponse(event.channel, text, messageTs);
+					}
 				});
 				await updatePromise;
 			},
 
 			replaceMessage: async (text: string) => {
 				updatePromise = updatePromise.then(async () => {
-					if (!text.trim()) return;
-
-					if (editTimer) {
-						clearTimeout(editTimer);
-						editTimer = null;
-					}
-
-					// Build final display: tool arrows (if any) + blank line + response
-					let finalDisplay: string;
-					if (workingEntries.length > 0) {
-						finalDisplay = workingEntries.join("\n") + "\n\n" + text;
-					} else {
-						finalDisplay = text;
-					}
-
+					// Prepend tool arrows so they survive the final replace
+					accumulatedText = toolEntries.length > 0
+						? toolEntries.join("\n") + "\n\n" + text
+						: text;
+					const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
 					if (messageTs) {
-						await this.updateMessage(event.channel, messageTs, finalDisplay);
+						await this.updateMessage(event.channel, messageTs, displayText);
 					} else {
-						messageTs = await this.postMessage(event.channel, finalDisplay);
-					}
-
-					if (messageTs) {
-						this.logBotResponse(event.channel, text, messageTs);
+						messageTs = await this.postMessage(event.channel, displayText);
 					}
 				});
 				await updatePromise;
@@ -353,7 +289,8 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 				if (isTyping && !messageTs) {
 					updatePromise = updatePromise.then(async () => {
 						if (!messageTs) {
-							await flushMessage();
+							accumulatedText = eventFilename ? `_Starting event: ${eventFilename}_` : "_Thinking_";
+							messageTs = await this.postMessage(event.channel, accumulatedText + workingIndicator);
 						}
 					});
 					await updatePromise;
@@ -367,15 +304,9 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			setWorking: async (working: boolean) => {
 				updatePromise = updatePromise.then(async () => {
 					isWorking = working;
-					if (!working) {
-						if (editTimer) {
-							clearTimeout(editTimer);
-							editTimer = null;
-						}
-						// Final edit — removes the "..." spinner
-						if (messageTs) {
-							await flushMessage();
-						}
+					if (messageTs) {
+						const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
+						await this.updateMessage(event.channel, messageTs, displayText);
 					}
 				});
 				await updatePromise;
@@ -383,10 +314,6 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 
 			deleteMessage: async () => {
 				updatePromise = updatePromise.then(async () => {
-					if (editTimer) {
-						clearTimeout(editTimer);
-						editTimer = null;
-					}
 					for (let i = threadMessageTs.length - 1; i >= 0; i--) {
 						try {
 							await this.deleteMessage(event.channel, threadMessageTs[i]);
