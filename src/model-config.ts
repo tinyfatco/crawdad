@@ -33,8 +33,61 @@ const FIREWORKS_ALIAS_TO_MODEL_ID: Record<string, string> = {
 	"kimi-k2p5": "accounts/fireworks/models/kimi-k2p5",
 };
 
+/**
+ * Fireworks model definitions. US-hosted inference for models that
+ * would otherwise route through China (MiniMax) or other regions.
+ */
+const FIREWORKS_MODELS = [
+	{
+		id: "accounts/fireworks/models/minimax-m2p5",
+		name: "MiniMax M2.5 (Fireworks)",
+		reasoning: true,
+		input: ["text"] as ("text" | "image")[],
+		cost: { input: 0.8, output: 4, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 204800,
+		maxTokens: 131072,
+	},
+	{
+		id: "accounts/fireworks/models/deepseek-v3p1",
+		name: "DeepSeek V3.1 (Fireworks)",
+		reasoning: false,
+		input: ["text"] as ("text" | "image")[],
+		cost: { input: 0.5, output: 1.5, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 131072,
+		maxTokens: 131072,
+	},
+	{
+		id: "accounts/fireworks/models/kimi-k2p5",
+		name: "Kimi K2.5 (Fireworks)",
+		reasoning: true,
+		input: ["text"] as ("text" | "image")[],
+		cost: { input: 0.6, output: 3, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 262144,
+		maxTokens: 65536,
+	},
+];
+
+/**
+ * Register the Fireworks provider on a ModelRegistry.
+ * Only registers if FIREWORKS_API_KEY is set in the environment.
+ */
+export function registerFireworksProvider(registry: ModelRegistry): void {
+	if (!process.env.FIREWORKS_API_KEY) {
+		return;
+	}
+
+	registry.registerProvider("fireworks", {
+		baseUrl: "https://api.fireworks.ai/inference/v1",
+		apiKey: "FIREWORKS_API_KEY",
+		api: "openai-completions" as Api,
+		models: FIREWORKS_MODELS,
+	});
+
+	log.logInfo(`Registered fireworks provider (${FIREWORKS_MODELS.length} models)`);
+}
+
 function createWorkspaceModelRegistry(workingDir?: string): ModelRegistry {
-	const authStorage = new AuthStorage();
+	const authStorage = AuthStorage.create();
 	const modelsJsonPath = workingDir ? join(workingDir, "models.json") : undefined;
 	return new ModelRegistry(authStorage, modelsJsonPath);
 }

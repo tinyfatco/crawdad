@@ -18,7 +18,7 @@ import { join } from "path";
 import type { ChannelInfo, MomContext, UserInfo } from "./adapters/types.js";
 import { MomSettingsManager, syncLogToSessionManager } from "./context.js";
 import * as log from "./log.js";
-import { resolveModel, resolveApiKey } from "./model-config.js";
+import { resolveModel, resolveApiKey, registerFireworksProvider } from "./model-config.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
@@ -464,8 +464,11 @@ function createRunner(
 	// Create AuthStorage and ModelRegistry
 	// Important: point ModelRegistry at workspace models.json (/data/models.json)
 	// so custom providers (e.g. fireworks proxy) are available to /model and runtime.
-	const authStorage = new AuthStorage();
+	const authStorage = AuthStorage.create();
 	const modelRegistry = new ModelRegistry(authStorage, join(workspaceDir, "models.json"));
+
+	// Register Fireworks provider (US-hosted inference for MiniMax, DeepSeek, Kimi)
+	registerFireworksProvider(modelRegistry);
 
 	// Resolve model: env vars > settings.json > defaults
 	const model = resolveModel(workspaceDir, modelRegistry);
