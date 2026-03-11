@@ -649,8 +649,10 @@ function createRunner(
 
 				for (const thinking of thinkingParts) {
 					log.logThinking(logCtx, thinking);
-					queue.enqueueMessage(`_${thinking}_`, "main", "thinking main");
-					queue.enqueueMessage(`_${thinking}_`, "thread", "thinking thread", false);
+					const lines = thinking.trim().split("\n").map((l: string) => l.trim()).filter(Boolean);
+					const formatted = "💭 " + lines.map((l: string) => `_${l}_`).join("\n");
+					queue.enqueueMessage(formatted, "main", "thinking main");
+					queue.enqueueMessage(formatted, "thread", "thinking thread", false);
 				}
 
 				if (text.trim()) {
