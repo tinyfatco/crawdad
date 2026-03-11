@@ -216,8 +216,22 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		const workingIndicator = " ...";
 		let updatePromise = Promise.resolve();
 
-		// Track tool arrows separately so replaceMessage can preserve them
-		const toolEntries: string[] = [];
+		// Buffer for real content — only flushed to working message if more events
+		// arrive. If replaceMessage arrives first, pendingText is discarded (dedup).
+		let pendingText: string | null = null;
+
+		const flushPendingText = async () => {
+			if (pendingText !== null) {
+				accumulatedText = accumulatedText ? `${accumulatedText}\n${pendingText}` : pendingText;
+				pendingText = null;
+				const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
+				if (messageTs) {
+					await this.updateMessage(event.channel, messageTs, displayText);
+				} else {
+					messageTs = await this.postMessage(event.channel, displayText);
+				}
+			}
+		};
 
 		const user = this.users.get(event.user);
 		const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
@@ -238,22 +252,24 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 
 			respond: async (text: string, shouldLog = true) => {
 				updatePromise = updatePromise.then(async () => {
-					// Capture tool arrows so replaceMessage can preserve them
-					if (!shouldLog && text.startsWith("_→")) {
-						toolEntries.push(text);
+					// Status messages (shouldLog=false) — flush pending, append to working
+					if (!shouldLog) {
+						await flushPendingText();
+						accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
+						const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
+						if (messageTs) {
+							await this.updateMessage(event.channel, messageTs, displayText);
+						} else {
+							messageTs = await this.postMessage(event.channel, displayText);
+						}
+						return;
 					}
 
-					accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
-					const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
-
-					if (messageTs) {
-						await this.updateMessage(event.channel, messageTs, displayText);
-					} else {
-						messageTs = await this.postMessage(event.channel, displayText);
-					}
-
-					if (shouldLog && messageTs) {
-						this.logBotResponse(event.channel, text, messageTs);
+					// Real content (shouldLog=true) — buffer it. If more events arrive
+					// before replaceMessage, flushPendingText proves it was interim.
+					if (text.trim()) {
+						await flushPendingText();
+						pendingText = text;
 					}
 				});
 				await updatePromise;
@@ -262,6 +278,9 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			replaceMessage: async (text: string) => {
 				updatePromise = updatePromise.then(async () => {
 					if (!text.trim()) return;
+
+					// Discard pendingText — it's the same text about to be sent as Message 2
+					pendingText = null;
 
 					// Finalize the working message (remove working indicator)
 					if (messageTs && isWorking) {
