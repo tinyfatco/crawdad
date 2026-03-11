@@ -1,0 +1,27 @@
+# Troublemaker VPS Deployment
+#
+# Prerequisites:
+#   1. rclone mount agent's R2 directory to a local path (e.g. /data/agent)
+#   2. Create agent.env with required env vars (see below)
+#   3. docker compose up -d
+#
+# Required env vars in agent.env:
+#   ANTHROPIC_API_KEY=sk-ant-...
+#   MOM_TELEGRAM_BOT_TOKEN=...        # for telegram:polling
+#   MOM_SLACK_BOT_TOKEN=xoxb-...      # for slack:webhook or slack:socket
+#   MOM_SLACK_APP_TOKEN=xapp-...      # for slack:socket
+#   MOM_SLACK_SIGNING_SECRET=...      # for slack:webhook
+#   FAT_TOOLS_TOKEN=...               # for platform API access
+
+services:
+  agent:
+    build: .
+    container_name: troublemaker-agent
+    restart: always
+    env_file: agent.env
+    volumes:
+      - /data/agent:/data
+    command: ["--adapter=telegram:polling", "--sandbox=host", "--port=3002", "/data"]
+    # Uncomment to expose gateway port on host (for webhook adapters):
+    # ports:
+    #   - "3002:3002"
