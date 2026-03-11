@@ -77,7 +77,7 @@ export function registerFireworksProvider(registry: ModelRegistry): void {
 	}
 
 	registry.registerProvider("fireworks", {
-		baseUrl: "https://api.fireworks.ai/inference/v1",
+		baseUrl: process.env.FIREWORKS_BASE_URL || "https://api.fireworks.ai/inference/v1",
 		apiKey: "FIREWORKS_API_KEY",
 		api: "openai-completions" as Api,
 		models: FIREWORKS_MODELS,
@@ -264,6 +264,7 @@ function applyBaseUrlOverride(model: Model<Api>, provider: string): Model<Api> {
 		anthropic: process.env.ANTHROPIC_BASE_URL,
 		openai: process.env.OPENAI_BASE_URL,
 		"openai-codex": process.env.OPENAI_CODEX_BASE_URL,
+		fireworks: process.env.FIREWORKS_BASE_URL,
 	};
 
 	const override = overrides[provider];
