@@ -261,16 +261,16 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 
 			replaceMessage: async (text: string) => {
 				updatePromise = updatePromise.then(async () => {
-					// Prepend tool arrows so they survive the final replace
-					accumulatedText = toolEntries.length > 0
-						? toolEntries.join("\n") + "\n\n" + text
-						: text;
-					const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
-					if (messageTs) {
-						await this.updateMessage(event.channel, messageTs, displayText);
-					} else {
-						messageTs = await this.postMessage(event.channel, displayText);
+					if (!text.trim()) return;
+
+					// Finalize the working message (remove working indicator)
+					if (messageTs && isWorking) {
+						await this.updateMessage(event.channel, messageTs, accumulatedText);
 					}
+
+					// Post final response as a new message (matches Telegram pattern)
+					const finalTs = await this.postMessage(event.channel, text);
+					this.logBotResponse(event.channel, text, finalTs);
 				});
 				await updatePromise;
 			},
