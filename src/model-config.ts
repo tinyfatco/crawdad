@@ -41,7 +41,7 @@ const FIREWORKS_MODELS = [
 	{
 		id: "accounts/fireworks/models/minimax-m2p5",
 		name: "MiniMax M2.5 (Fireworks)",
-		reasoning: true,
+		reasoning: false,
 		input: ["text"] as ("text" | "image")[],
 		cost: { input: 0.8, output: 4, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 204800,
