@@ -89,7 +89,9 @@ export function registerFireworksProvider(registry: ModelRegistry): void {
 function createWorkspaceModelRegistry(workingDir?: string): ModelRegistry {
 	const authStorage = AuthStorage.create();
 	const modelsJsonPath = workingDir ? join(workingDir, "models.json") : undefined;
-	return new ModelRegistry(authStorage, modelsJsonPath);
+	const registry = new ModelRegistry(authStorage, modelsJsonPath);
+	registerFireworksProvider(registry);
+	return registry;
 }
 
 function getRegistryModels(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api>[] {
@@ -231,13 +233,15 @@ export function findModel(
 }
 
 /**
- * List available models (for /model command with no args).
+ * List available models — only those with auth configured.
+ * Without this filter, 700+ built-in models would flood the output.
  */
 export function listModels(
 	workingDir?: string,
 	modelRegistry?: ModelRegistry,
 ): Array<{ provider: string; id: string; name: string; api: string }> {
-	return getRegistryModels(workingDir, modelRegistry).map((model) => ({
+	const registry = modelRegistry || createWorkspaceModelRegistry(workingDir);
+	return registry.getAvailable().map((model) => ({
 		provider: model.provider,
 		id: model.id,
 		name: model.name,
