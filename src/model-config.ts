@@ -44,8 +44,8 @@ const FIREWORKS_MODELS = [
 		reasoning: true,
 		input: ["text"] as ("text" | "image")[],
 		cost: { input: 0.30, output: 1.20, cacheRead: 0.03, cacheWrite: 0 },
-		contextWindow: 204800,
-		maxTokens: 131072,
+		contextWindow: 196608,
+		maxTokens: 24576,
 	},
 	{
 		id: "accounts/fireworks/models/deepseek-v3p1",
@@ -53,8 +53,8 @@ const FIREWORKS_MODELS = [
 		reasoning: false,
 		input: ["text"] as ("text" | "image")[],
 		cost: { input: 0.56, output: 1.68, cacheRead: 0.28, cacheWrite: 0 },
-		contextWindow: 131072,
-		maxTokens: 131072,
+		contextWindow: 163840,
+		maxTokens: 20480,
 	},
 	{
 		id: "accounts/fireworks/models/kimi-k2p5",
@@ -63,7 +63,7 @@ const FIREWORKS_MODELS = [
 		input: ["text"] as ("text" | "image")[],
 		cost: { input: 0.60, output: 3.00, cacheRead: 0.10, cacheWrite: 0 },
 		contextWindow: 262144,
-		maxTokens: 65536,
+		maxTokens: 32768,
 	},
 ];
 
