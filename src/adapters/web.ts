@@ -349,6 +349,10 @@ Keep responses concise and helpful.`;
 			},
 
 			deleteMessage: async () => {},
+
+			restartWorking: async () => {
+				// No-op for web — SSE stream is continuous
+			},
 		};
 	}
 }

@@ -437,6 +437,10 @@ Keep responses concise and professional. The user will receive one email with yo
 			deleteMessage: async () => {
 				// No-op for email
 			},
+
+			restartWorking: async () => {
+				// No-op for email
+			},
 		};
 	}
 

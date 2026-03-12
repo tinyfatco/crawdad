@@ -281,5 +281,37 @@ export function createTwoMessageContext(
 			});
 			await updatePromise;
 		},
+
+		restartWorking: async (newHeaderLine?: string) => {
+			updatePromise = updatePromise.then(async () => {
+				// Finalize the current working message
+				await flushPendingText();
+				if (editTimer) {
+					clearTimeout(editTimer);
+					editTimer = null;
+				}
+				isWorking = false;
+				if (workingEntries.length === 0 && workingMessageId) {
+					await ops.delete(event.channel, workingMessageId);
+				} else if (workingMessageId) {
+					await flushWorkingMessage();
+				}
+
+				// Reset state for fresh working message
+				workingMessageId = null;
+				finalMessageId = null;
+				workingEntries.length = 0;
+				pendingText = null;
+				isWorking = true;
+				lastEditTime = 0;
+				editDirty = false;
+
+				// Update header if provided
+				if (newHeaderLine) {
+					config.headerLine = newHeaderLine;
+				}
+			});
+			await updatePromise;
+		},
 	};
 }

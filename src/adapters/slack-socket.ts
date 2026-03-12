@@ -83,7 +83,7 @@ export class SlackSocketAdapter extends SlackBase {
 			}
 
 			if (this.handler.isRunning(e.channel)) {
-				this.postMessage(e.channel, "_Already working. Say `@mom stop` to cancel._");
+				this.handler.handleSteer(momEvent, this);
 			} else {
 				this.getQueue(e.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
 			}
@@ -154,7 +154,7 @@ export class SlackSocketAdapter extends SlackBase {
 				}
 
 				if (this.handler.isRunning(e.channel)) {
-					this.postMessage(e.channel, "_Already working. Say `stop` to cancel._");
+					this.handler.handleSteer(momEvent, this);
 				} else {
 					this.getQueue(e.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
 				}

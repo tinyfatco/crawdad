@@ -55,6 +55,8 @@ export interface MomContext {
 	uploadFile: (filePath: string, title?: string) => Promise<void>;
 	setWorking: (working: boolean) => Promise<void>;
 	deleteMessage: () => Promise<void>;
+	/** Finalize the current working message and start a fresh one (used by steering) */
+	restartWorking: (headerLine?: string) => Promise<void>;
 }
 
 /**
@@ -72,6 +74,13 @@ export interface MomHandler {
 	 * Events always queue and pass isEvent=true.
 	 */
 	handleEvent(event: MomEvent, adapter: PlatformAdapter, isEvent?: boolean): Promise<void>;
+
+	/**
+	 * Steer a message into an active run (ASYNC)
+	 * Called when isRunning() is true — injects the message mid-run
+	 * instead of rejecting with "Already working."
+	 */
+	handleSteer(event: MomEvent, adapter: PlatformAdapter): void;
 
 	/**
 	 * Handle stop command (ASYNC)

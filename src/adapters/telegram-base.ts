@@ -152,9 +152,9 @@ When mentioning users, use @username format.`;
 			return;
 		}
 
-		// Check if busy
+		// Steer into active run or start new one
 		if (this.handler.isRunning(chatId)) {
-			this.postMessage(chatId, "_Already working. Say `stop` to cancel._");
+			this.handler.handleSteer(momEvent, this);
 		} else {
 			this.enqueueWork(chatId, () => this.handler.handleEvent(momEvent, this));
 		}

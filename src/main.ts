@@ -266,6 +266,27 @@ const handler: MomHandler = {
 		return state?.running ?? false;
 	},
 
+	handleSteer(event: MomEvent, _adapter: PlatformAdapter): void {
+		const state = channelStates.get(event.channel);
+		if (!state?.running) {
+			log.logWarning(`[steer] handleSteer called but channel ${event.channel} not running`);
+			return;
+		}
+
+		// Format the message the same way handleEvent does
+		const now = new Date();
+		const pad = (n: number) => n.toString().padStart(2, "0");
+		const offset = -now.getTimezoneOffset();
+		const offsetSign = offset >= 0 ? "+" : "-";
+		const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
+		const offsetMins = pad(Math.abs(offset) % 60);
+		const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetMins}`;
+		const formattedMessage = `[${timestamp}] [${event.user || "unknown"}]: ${event.text}`;
+
+		log.logInfo(`[steer:${event.channel}] Steering message into active run: ${event.text.substring(0, 50)}`);
+		state.runner.steer(formattedMessage);
+	},
+
 	async handleStop(channelId: string, platform: PlatformAdapter): Promise<void> {
 		const state = channelStates.get(channelId);
 		if (state?.running) {

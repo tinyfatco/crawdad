@@ -158,7 +158,7 @@ export class SlackWebhookAdapter extends SlackBase {
 		}
 
 		if (this.handler.isRunning(event.channel)) {
-			this.postMessage(event.channel, "_Already working. Say `@mom stop` to cancel._");
+			this.handler.handleSteer(momEvent, this);
 		} else {
 			this.getQueue(event.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
 		}
@@ -195,7 +195,7 @@ export class SlackWebhookAdapter extends SlackBase {
 			}
 
 			if (this.handler.isRunning(event.channel)) {
-				this.postMessage(event.channel, "_Already working. Say `stop` to cancel._");
+				this.handler.handleSteer(momEvent, this);
 			} else {
 				this.getQueue(event.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
 			}

@@ -38,6 +38,8 @@ export interface AgentRunner {
 		pendingMessages?: PendingMessage[],
 	): Promise<{ stopReason: string; errorMessage?: string }>;
 	abort(): void;
+	/** Steer a message into the active run (mid-run injection via pi-agent) */
+	steer(text: string): void;
 }
 
 
@@ -552,6 +554,8 @@ function createRunner(
 		},
 		stopReason: "stop",
 		errorMessage: undefined as string | undefined,
+		/** Tracks whether the initial prompt has been sent — subsequent user messages are steered */
+		initialPromptSent: false,
 	};
 
 	// Event handler — extracted so it can be attached when session is lazily created
@@ -609,6 +613,18 @@ function createRunner(
 			const agentEvent = event as AgentEvent & { type: "message_start" };
 			if (agentEvent.message.role === "assistant") {
 				log.logResponseStart(logCtx);
+			} else if (agentEvent.message.role === "user") {
+				if (runState.initialPromptSent) {
+					// A user message appeared mid-run — this is a steered message.
+					// Restart the working message so the continuation gets a fresh Message 1.
+					log.logInfo(`[${logCtx.channelId}] Steered message detected, restarting working message`);
+					queue.enqueue(async () => {
+						await ctx.restartWorking();
+					}, "restart working for steer");
+				} else {
+					// First user message in this run — mark as sent so subsequent ones trigger steer UX
+					runState.initialPromptSent = true;
+				}
 			}
 		} else if (event.type === "message_end") {
 			const agentEvent = event as AgentEvent & { type: "message_end" };
@@ -795,6 +811,7 @@ function createRunner(
 			};
 			runState.stopReason = "stop";
 			runState.errorMessage = undefined;
+			runState.initialPromptSent = false;
 
 			// Create queue for this run
 			let queueChain = Promise.resolve();
@@ -972,6 +989,17 @@ function createRunner(
 
 		abort(): void {
 			if (session) session.abort();
+		},
+
+		steer(text: string): void {
+			const s = getSession();
+			if (s.isStreaming) {
+				s.steer(text).catch((err: Error) => {
+					log.logWarning(`[${channelId}] steer failed`, err.message);
+				});
+			} else {
+				log.logWarning(`[${channelId}] steer called but not streaming, ignoring`);
+			}
 		},
 	};
 }

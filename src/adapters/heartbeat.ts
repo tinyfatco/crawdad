@@ -324,6 +324,10 @@ You have woken up on your own schedule to think, act, and decide.
 			deleteMessage: async () => {
 				// No-op
 			},
+
+			restartWorking: async () => {
+				// No-op for heartbeat
+			},
 		};
 	}
 }
