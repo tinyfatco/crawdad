@@ -49,7 +49,7 @@ export interface MomContext {
 	channels: ChannelInfo[];
 	users: UserInfo[];
 	respond: (text: string, shouldLog?: boolean) => Promise<void>;
-	replaceMessage: (text: string) => Promise<void>;
+	sendFinalResponse: (text: string) => Promise<void>;
 	respondInThread: (text: string) => Promise<void>;
 	setTyping: (isTyping: boolean) => Promise<void>;
 	uploadFile: (filePath: string, title?: string) => Promise<void>;

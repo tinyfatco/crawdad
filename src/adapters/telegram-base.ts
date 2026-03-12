@@ -4,6 +4,7 @@ import { basename, join } from "path";
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
 import { markdownToTelegramHtml } from "./telegram-format.js";
+import { createTwoMessageContext } from "./context.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 
 // ============================================================================
@@ -310,28 +311,6 @@ When mentioning users, use @username format.`;
 	// ==========================================================================
 
 	createContext(event: MomEvent, _store: ChannelStore, isEvent?: boolean): MomContext {
-		// Two-message pattern:
-		//   Message 1 (working): Accumulates tool summaries AND interim text in chronological order.
-		//                        Sent on first content, then edited in place as the agent works.
-		//   Message 2 (final):   Final response text, sent as a NEW message (triggers notification).
-		let workingMessageId: string | null = null;
-		let finalMessageId: string | null = null;
-		let isWorking = true;
-		let updatePromise = Promise.resolve();
-
-		// Chronological entries for the working message (tool arrows + interim text blocks)
-		const workingEntries: string[] = [];
-
-		// Pending text buffer: holds the latest shouldLog=true text until we know
-		// whether it's interim (next event arrives → flush to working) or final
-		// (replaceMessage arrives → send as Message 2, skip working entirely).
-		let pendingText: string | null = null;
-
-		// Throttle: minimum 300ms between edits to avoid Telegram 429s
-		let lastEditTime = 0;
-		let editTimer: ReturnType<typeof setTimeout> | null = null;
-		let editDirty = false;
-
 		const user = this.users.get(event.user);
 		const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
 
@@ -339,199 +318,36 @@ When mentioning users, use @username format.`;
 			? `<i>Starting event: ${escapeHtml(eventFilename)}</i>`
 			: "<i>Thinking</i>";
 
-		// Build the working message display from all accumulated entries
-		const buildWorkingDisplay = (): string => {
-			const lines = [headerLine, ...workingEntries];
-			let display = lines.join("\n");
-
-			// Telegram 4096 char limit — trim oldest entries if needed
-			while (display.length > 4000 && workingEntries.length > 1) {
-				workingEntries.shift();
-				display = `<i>... trimmed</i>\n${[headerLine, ...workingEntries].join("\n")}`;
-			}
-
-			return isWorking ? display + " ..." : display;
-		};
-
-		// Send or edit the working message (Message 1) with throttling
-		const flushWorkingMessage = async () => {
-			const display = buildWorkingDisplay();
-			if (workingMessageId) {
-				await this.updateMessage(event.channel, workingMessageId, display);
-			} else {
-				workingMessageId = await this.postMessage(event.channel, display);
-			}
-			lastEditTime = Date.now();
-			editDirty = false;
-		};
-
-		const scheduleWorkingUpdate = async () => {
-			const elapsed = Date.now() - lastEditTime;
-			if (elapsed >= 300) {
-				// Enough time has passed — edit immediately
-				if (editTimer) {
-					clearTimeout(editTimer);
-					editTimer = null;
-				}
-				await flushWorkingMessage();
-			} else {
-				// Mark dirty, schedule flush if not already scheduled
-				editDirty = true;
-				if (!editTimer) {
-					editTimer = setTimeout(() => {
-						editTimer = null;
-						if (editDirty) {
-							// Chain onto updatePromise so ordering is preserved
-							updatePromise = updatePromise.then(() => flushWorkingMessage());
-						}
-					}, 300 - elapsed);
-				}
-			}
-		};
-
-		// Commit pendingText to the working message (proves it was interim, not final)
-		const flushPendingText = async () => {
-			if (pendingText !== null) {
-				workingEntries.push(escapeHtml(pendingText));
-				pendingText = null;
-				await scheduleWorkingUpdate();
-			}
-		};
-
-		return {
-			message: {
-				text: event.text,
-				rawText: event.text,
-				user: event.user,
-				userName: user?.userName,
-				channel: event.channel,
-				ts: event.ts,
-				attachments: (event.attachments || []).map((a) => ({ local: a.local })),
+		return createTwoMessageContext(
+			{
+				post: (ch, text) => this.postMessage(ch, text),
+				update: (ch, id, text) => this.updateMessage(ch, id, text),
+				delete: (ch, id) => this.deleteMessage(ch, id),
+				formatStatus: (text) => `<i>${escapeHtml(text)}</i>`,
+				throttleMs: 300,
+				maxLength: this.maxMessageLength,
 			},
-			channelName: this.channels.get(event.channel)?.name,
-			channels: this.getAllChannels().map((c) => ({ id: c.id, name: c.name })),
-			users: this.getAllUsers().map((u) => ({ id: u.id, userName: u.userName, displayName: u.displayName })),
-
-			respond: async (text: string, shouldLog = true) => {
-				updatePromise = updatePromise.then(async () => {
-					// Tool labels (shouldLog=false, starts with _→) — append to working message
-					if (!shouldLog && text.startsWith("_→")) {
-						await flushPendingText();
-						const label = text.replace(/^_/, "").replace(/_$/, "");
-						workingEntries.push(`<i>${escapeHtml(label)}</i>`);
-						await scheduleWorkingUpdate();
-						return;
-					}
-
-					// Status messages (shouldLog=false) — flush pending, refresh working message
-					if (!shouldLog) {
-						await flushPendingText();
-						await scheduleWorkingUpdate();
-						return;
-					}
-
-					// Real content (shouldLog=true) — buffer it. If something else arrives
-					// before replaceMessage, flushPendingText proves it was interim.
-					if (text.trim()) {
-						await flushPendingText();
-						pendingText = text;
-					}
-				});
-				await updatePromise;
+			{
+				headerLine,
+				event,
+				user,
+				channels: this.getAllChannels(),
+				users: this.getAllUsers(),
+				channelName: this.channels.get(event.channel)?.name,
+				isEvent,
 			},
-
-			replaceMessage: async (text: string) => {
-				updatePromise = updatePromise.then(async () => {
-					// Final response — send as a NEW message (Message 2) for notification.
-					// Discard pendingText (it's the same text about to be sent as Message 2).
-					if (!text.trim()) return;
-
-					pendingText = null;
-
-					if (workingMessageId) {
-						if (editTimer) {
-							clearTimeout(editTimer);
-							editTimer = null;
-						}
-						await flushWorkingMessage();
+			{
+				logBotResponse: (ch, text, ts) => this.logBotResponse(ch, text, ts),
+				sendTyping: async () => {
+					try {
+						await this.bot.sendChatAction(Number(event.channel), "typing");
+					} catch {
+						// Ignore typing errors
 					}
-
-					finalMessageId = await this.postMessage(event.channel, text);
-					this.logBotResponse(event.channel, text, finalMessageId);
-				});
-				await updatePromise;
+				},
+				uploadFile: (filePath, title) => this.uploadFile(event.channel, filePath, title),
 			},
-
-			// Telegram: swallow thread messages (tool details, duplicates, usage)
-			respondInThread: async (_text: string) => {
-				// No-op — tool details logged to log.jsonl, not posted to chat
-			},
-
-			setTyping: async (isTyping: boolean) => {
-				if (isTyping && !workingMessageId) {
-					updatePromise = updatePromise.then(async () => {
-						if (!workingMessageId) {
-							try {
-								await this.bot.sendChatAction(Number(event.channel), "typing");
-							} catch {
-								// Ignore typing errors
-							}
-							await flushWorkingMessage();
-						}
-					});
-					await updatePromise;
-				}
-			},
-
-			uploadFile: async (filePath: string, title?: string) => {
-				await this.uploadFile(event.channel, filePath, title);
-			},
-
-			setWorking: async (working: boolean) => {
-				updatePromise = updatePromise.then(async () => {
-					isWorking = working;
-					if (!working) {
-						// Commit any orphaned pending text before finalizing
-						await flushPendingText();
-
-						// Flush any pending throttled edit
-						if (editTimer) {
-							clearTimeout(editTimer);
-							editTimer = null;
-						}
-
-						// If nothing accumulated, delete the working message (clean UX)
-						if (workingEntries.length === 0 && workingMessageId) {
-							await this.deleteMessage(event.channel, workingMessageId);
-							workingMessageId = null;
-						} else if (workingMessageId) {
-							// Final edit — removes the "..." spinner
-							await flushWorkingMessage();
-						}
-					}
-				});
-				await updatePromise;
-			},
-
-			deleteMessage: async () => {
-				updatePromise = updatePromise.then(async () => {
-					// Delete both messages (used by [SILENT] handler)
-					if (editTimer) {
-						clearTimeout(editTimer);
-						editTimer = null;
-					}
-					if (workingMessageId) {
-						await this.deleteMessage(event.channel, workingMessageId);
-						workingMessageId = null;
-					}
-					if (finalMessageId) {
-						await this.deleteMessage(event.channel, finalMessageId);
-						finalMessageId = null;
-					}
-				});
-				await updatePromise;
-			},
-		};
+		);
 	}
 
 	// ==========================================================================

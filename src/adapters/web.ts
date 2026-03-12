@@ -312,7 +312,7 @@ Keep responses concise and helpful.`;
 				}
 			},
 
-			replaceMessage: async (text: string) => {
+			sendFinalResponse: async (text: string) => {
 				// Final text — already sent via respond(), no need to re-send
 			},
 

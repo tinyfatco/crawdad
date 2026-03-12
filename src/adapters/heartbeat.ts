@@ -299,7 +299,7 @@ You have woken up on your own schedule to think, act, and decide.
 				}
 			},
 
-			replaceMessage: async (text: string) => {
+			sendFinalResponse: async (text: string) => {
 				if (text.trim() && text.trim() !== "[SILENT]") {
 					log.logInfo(`[heartbeat] final: ${text.substring(0, 200)}`);
 				}

@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
+import { createTwoMessageContext } from "./context.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 import { markdownToSlackMrkdwn } from "./slack-format.js";
 
@@ -209,130 +210,46 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	// ==========================================================================
 
 	createContext(event: MomEvent, _store: ChannelStore, isEvent?: boolean): MomContext {
-		let messageTs: string | null = null;
-		const threadMessageTs: string[] = [];
-		let accumulatedText = "";
-		let isWorking = true;
-		const workingIndicator = " ...";
-		let updatePromise = Promise.resolve();
-
-		// Buffer for real content — only flushed to working message if more events
-		// arrive. If replaceMessage arrives first, pendingText is discarded (dedup).
-		let pendingText: string | null = null;
-
-		const flushPendingText = async () => {
-			if (pendingText !== null) {
-				accumulatedText = accumulatedText ? `${accumulatedText}\n${pendingText}` : pendingText;
-				pendingText = null;
-				const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
-				if (messageTs) {
-					await this.updateMessage(event.channel, messageTs, displayText);
-				} else {
-					messageTs = await this.postMessage(event.channel, displayText);
-				}
-			}
-		};
-
 		const user = this.users.get(event.user);
 		const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
 
-		return {
-			message: {
-				text: event.text,
-				rawText: event.text,
-				user: event.user,
-				userName: user?.userName,
-				channel: event.channel,
-				ts: event.ts,
-				attachments: (event.attachments || []).map((a) => ({ local: a.local })),
+		const headerLine = eventFilename ? `_Starting event: ${eventFilename}_` : "_Thinking_";
+
+		// Track thread messages and working message ID for respondInThread + deleteMessage
+		const threadMessageTs: string[] = [];
+		let workingMessageId: string | null = null;
+
+		return createTwoMessageContext(
+			{
+				post: (ch, text) => this.postMessage(ch, text),
+				update: (ch, id, text) => this.updateMessage(ch, id, text),
+				delete: (ch, id) => this.deleteMessage(ch, id),
+				formatStatus: (text) => `_${text}_`,
+				throttleMs: 0,
+				maxLength: this.maxMessageLength,
 			},
-			channelName: this.channels.get(event.channel)?.name,
-			channels: this.getAllChannels().map((c) => ({ id: c.id, name: c.name })),
-			users: this.getAllUsers().map((u) => ({ id: u.id, userName: u.userName, displayName: u.displayName })),
-
-			respond: async (text: string, shouldLog = true) => {
-				updatePromise = updatePromise.then(async () => {
-					// Status messages (shouldLog=false) — flush pending, append to working
-					if (!shouldLog) {
-						await flushPendingText();
-						accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
-						const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
-						if (messageTs) {
-							await this.updateMessage(event.channel, messageTs, displayText);
-						} else {
-							messageTs = await this.postMessage(event.channel, displayText);
-						}
-						return;
-					}
-
-					// Real content (shouldLog=true) — buffer it. If more events arrive
-					// before replaceMessage, flushPendingText proves it was interim.
-					if (text.trim()) {
-						await flushPendingText();
-						pendingText = text;
-					}
-				});
-				await updatePromise;
+			{
+				headerLine,
+				event,
+				user,
+				channels: this.getAllChannels(),
+				users: this.getAllUsers(),
+				channelName: this.channels.get(event.channel)?.name,
+				isEvent,
 			},
-
-			replaceMessage: async (text: string) => {
-				updatePromise = updatePromise.then(async () => {
-					if (!text.trim()) return;
-
-					// Discard pendingText — it's the same text about to be sent as Message 2
-					pendingText = null;
-
-					// Finalize the working message (remove working indicator)
-					if (messageTs && isWorking) {
-						await this.updateMessage(event.channel, messageTs, accumulatedText);
-					}
-
-					// Post final response as a new message (matches Telegram pattern)
-					const finalTs = await this.postMessage(event.channel, text);
-					this.logBotResponse(event.channel, text, finalTs);
-				});
-				await updatePromise;
-			},
-
-			respondInThread: async (text: string) => {
-				updatePromise = updatePromise.then(async () => {
-					if (messageTs) {
-						const ts = await this.postInThread(event.channel, messageTs, text);
+			{
+				onWorkingUpdate: (id) => {
+					workingMessageId = id;
+				},
+				logBotResponse: (ch, text, ts) => this.logBotResponse(ch, text, ts),
+				respondInThread: async (text) => {
+					if (workingMessageId) {
+						const ts = await this.postInThread(event.channel, workingMessageId, text);
 						threadMessageTs.push(ts);
 					}
-				});
-				await updatePromise;
-			},
-
-			setTyping: async (isTyping: boolean) => {
-				if (isTyping && !messageTs) {
-					updatePromise = updatePromise.then(async () => {
-						if (!messageTs) {
-							accumulatedText = eventFilename ? `_Starting event: ${eventFilename}_` : "_Thinking_";
-							messageTs = await this.postMessage(event.channel, accumulatedText + workingIndicator);
-						}
-					});
-					await updatePromise;
-				}
-			},
-
-			uploadFile: async (filePath: string, title?: string) => {
-				await this.uploadFile(event.channel, filePath, title);
-			},
-
-			setWorking: async (working: boolean) => {
-				updatePromise = updatePromise.then(async () => {
-					isWorking = working;
-					if (messageTs) {
-						const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
-						await this.updateMessage(event.channel, messageTs, displayText);
-					}
-				});
-				await updatePromise;
-			},
-
-			deleteMessage: async () => {
-				updatePromise = updatePromise.then(async () => {
+				},
+				uploadFile: (filePath, title) => this.uploadFile(event.channel, filePath, title),
+				deleteMessages: async (wId, fId) => {
 					for (let i = threadMessageTs.length - 1; i >= 0; i--) {
 						try {
 							await this.deleteMessage(event.channel, threadMessageTs[i]);
@@ -341,14 +258,11 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 						}
 					}
 					threadMessageTs.length = 0;
-					if (messageTs) {
-						await this.deleteMessage(event.channel, messageTs);
-						messageTs = null;
-					}
-				});
-				await updatePromise;
+					if (wId) await this.deleteMessage(event.channel, wId);
+					if (fId) await this.deleteMessage(event.channel, fId);
+				},
 			},
-		};
+		);
 	}
 
 	// ==========================================================================

@@ -401,7 +401,7 @@ Keep responses concise and professional. The user will receive one email with yo
 				}
 			},
 
-			replaceMessage: async (text: string) => {
+			sendFinalResponse: async (text: string) => {
 				finalText = text;
 			},
 

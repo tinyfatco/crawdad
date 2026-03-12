@@ -900,7 +900,7 @@ function createRunner(
 			// Handle error case - update main message and post error to thread
 			if (runState.stopReason === "error" && runState.errorMessage) {
 				try {
-					await ctx.replaceMessage("_Sorry, something went wrong_");
+					await ctx.sendFinalResponse("_Sorry, something went wrong_");
 					await ctx.respondInThread(`_Error: ${runState.errorMessage}_`);
 				} catch (err) {
 					const errMsg = err instanceof Error ? err.message : String(err);
@@ -931,7 +931,7 @@ function createRunner(
 							finalText.length > MAX_MESSAGE_LENGTH
 								? `${finalText.substring(0, MAX_MESSAGE_LENGTH - 50)}\n\n_(see thread for full response)_`
 								: finalText;
-						await ctx.replaceMessage(mainText);
+						await ctx.sendFinalResponse(mainText);
 					} catch (err) {
 						const errMsg = err instanceof Error ? err.message : String(err);
 						log.logWarning("Failed to replace message with final text", errMsg);
