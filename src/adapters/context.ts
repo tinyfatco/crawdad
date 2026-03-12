@@ -143,7 +143,7 @@ export function createTwoMessageContext(
 	// Commit pendingText to the working message (proves it was interim, not final)
 	const flushPendingText = async () => {
 		if (pendingText !== null) {
-			workingEntries.push(ops.formatStatus(pendingText));
+			workingEntries.push(pendingText);
 			pendingText = null;
 			await scheduleWorkingUpdate();
 		}
