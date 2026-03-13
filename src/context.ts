@@ -35,8 +35,8 @@ interface LogMessage {
  * This ensures that messages logged while mom wasn't running (channel chatter,
  * backfilled messages, messages while busy) are added to the LLM context.
  *
- * In trunk mode (channelNameMap provided), reads log.jsonl from ALL Slack channel
- * directories in the workspace and tags each message with its source channel.
+ * In trunk mode (channelNameMap provided), reads log.jsonl from ALL channel
+ * directories in the workspace (Slack, Telegram, Email, Web) and tags each message with its source.
  *
  * @param sessionManager - The SessionManager to sync to
  * @param channelDir - Path to channel directory containing log.jsonl (or trunk dir)
@@ -103,14 +103,17 @@ export async function syncLogToSessionManager(
 	// Collect log files to read
 	const logFiles: Array<{ path: string; channelId?: string }> = [];
 
+	// Directories that are NOT per-channel log dirs (skip during trunk sync)
+	const EXCLUDED_DIRS = new Set(["_trunk", "_slack_trunk", "_heartbeat", "events", "skills"]);
+
 	if (isTrunk) {
-		// Trunk mode: read log.jsonl from all Slack channel subdirectories
+		// Trunk mode: read log.jsonl from all channel subdirectories (Slack, Telegram, Email, Web)
 		// Uses async I/O to avoid blocking the event loop on s3fs mounts
 		const workspaceDir = join(channelDir, "..");
 		try {
 			const entries = await readdir(workspaceDir, { withFileTypes: true });
 			const checks = entries
-				.filter((entry) => entry.isDirectory() && /^[CDG]/.test(entry.name))
+				.filter((entry) => entry.isDirectory() && !EXCLUDED_DIRS.has(entry.name) && !entry.name.startsWith("."))
 				.map(async (entry) => {
 					const logPath = join(workspaceDir, entry.name, "log.jsonl");
 					try {

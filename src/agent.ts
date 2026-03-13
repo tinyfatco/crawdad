@@ -149,8 +149,8 @@ function buildSystemPrompt(
 	formatInstructions: string,
 	trunkInfo?: { displayChannelId: string; displayChannelName?: string },
 ): string {
-	const isTrunk = channelId === "_slack_trunk";
-	const channelPath = isTrunk ? `${workspacePath}/_slack_trunk` : `${workspacePath}/${channelId}`;
+	const isTrunk = channelId === "_trunk";
+	const channelPath = isTrunk ? `${workspacePath}/_trunk` : `${workspacePath}/${channelId}`;
 	const isDocker = sandboxConfig.type === "docker";
 
 	// Format channel mappings
@@ -172,12 +172,12 @@ function buildSystemPrompt(
 
 	// Trunk-specific context section
 	const trunkContext = isTrunk && trunkInfo ? `
-## Attention Model
-You have a unified consciousness across all Slack channels. You are always AWARE of messages from every channel (they all enter your context), but you ATTEND to one channel at a time — that's where your visible output goes.
+## Attention Model (Context of Self)
+You have a unified consciousness across ALL channels — Slack, Telegram, Email, and Web. Every message from every channel enters your single context. You are always AWARE of everything, but you ATTEND to one channel at a time — that's where your visible output goes.
 
-**Currently attending:** #${trunkInfo.displayChannelName || trunkInfo.displayChannelId} (${trunkInfo.displayChannelId})
+**Currently attending:** ${trunkInfo.displayChannelName || trunkInfo.displayChannelId} (${trunkInfo.displayChannelId})
 
-Messages from other channels are tagged with their source: [#channel-name | CHANNEL_ID] [user]: text
+Messages from other channels are tagged with their source: [#channel | ID] or [Telegram:name] or [Email:addr] [user]: text
 When a message arrives from another channel mid-run, the harness will present it to you. You decide:
 - Respond naturally (output goes to your current attention channel)
 - Use \`send_message\` to acknowledge them on the other channel
@@ -190,10 +190,12 @@ ${workspacePath}/
 ├── MEMORY.md                    # Your memory (shared across all channels)
 ├── settings.json                # Model & preferences (see below)
 ├── skills/                      # Global CLI tools you create
-├── _slack_trunk/                # Unified Slack context
-│   ├── context.jsonl            # Your continuous context (all Slack channels)
+├── _trunk/                      # Unified context (all channels)
+│   ├── context.jsonl            # Your continuous context
 │   └── scratch/                 # Your working directory
-├── C.../                        # Per-channel logs (written by adapters)
+├── C.../                        # Per-channel logs (Slack, written by adapters)
+├── -12345.../                   # Per-channel logs (Telegram)
+├── email-.../                   # Per-channel logs (Email)
 │   └── log.jsonl                # Message history for that channel
 └── ...other channel dirs/` : `## Workspace Layout
 ${workspacePath}/
@@ -486,7 +488,7 @@ function createRunner(
 	extraTools: AgentTool<any>[] = [],
 	channelNameMap?: Map<string, string>,
 ): AgentRunner {
-	const isTrunk = channelId === "_slack_trunk";
+	const isTrunk = channelId === "_trunk";
 	const t0 = performance.now();
 	const executor = createExecutor(sandboxConfig);
 	const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
@@ -903,11 +905,11 @@ function createRunner(
 			const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
 			const offsetMins = pad(Math.abs(offset) % 60);
 			const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetMins}`;
-			// For trunk mode, tag messages with source channel
+			// For trunk mode, tag messages with source channel and adapter type
 			let userMessage: string;
 			if (isTrunk) {
-				const channelName = ctx.channelName || channelNameMap?.get(ctx.message.channel) || ctx.message.channel;
-				userMessage = `[${timestamp}] [#${channelName} | ${ctx.message.channel}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
+				const channelLabel = channelNameMap?.get(ctx.message.channel) || ctx.message.channel;
+				userMessage = `[${timestamp}] [${channelLabel}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
 			} else {
 				userMessage = `[${timestamp}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
 			}

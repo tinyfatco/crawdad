@@ -21,10 +21,11 @@ import { createSendMessageTool } from "./tools/send-message.js";
 import { createSetWorkingChannelTool } from "./tools/set-working-channel.js";
 
 // ============================================================================
-// Trunk resolution — Slack channels share one runner/context
+// Trunk resolution — all external channels share one runner/context
 // ============================================================================
 
-const SLACK_TRUNK_KEY = "_slack_trunk";
+const TRUNK_KEY = "_trunk";
+const HEARTBEAT_KEY = "_heartbeat";
 
 /** Returns true if the channelId looks like a Slack channel (C/D/G prefix) */
 function isSlackChannel(channelId: string): boolean {
@@ -33,10 +34,47 @@ function isSlackChannel(channelId: string): boolean {
 
 /**
  * Resolve a channelId to its trunk key.
- * All Slack channels map to a shared trunk. Other adapters pass through.
+ * All external channels (Slack, Telegram, Email, Web) map to the unified trunk.
+ * Only _heartbeat stays separate (internal meditation state).
  */
 function resolveTrunk(channelId: string): string {
-	return isSlackChannel(channelId) ? SLACK_TRUNK_KEY : channelId;
+	return channelId === HEARTBEAT_KEY ? HEARTBEAT_KEY : TRUNK_KEY;
+}
+
+/**
+ * Get a human-readable label for a channel, including adapter type.
+ * Used for tagging messages in the trunk context.
+ */
+function getChannelLabel(channelId: string, adapter: PlatformAdapter): string {
+	if (isSlackChannel(channelId)) {
+		const name = adapter.getChannel(channelId)?.name || channelId;
+		return `#${name} | ${channelId}`;
+	}
+	if (/^-?\d+$/.test(channelId)) {
+		const name = adapter.getChannel(channelId)?.name || channelId;
+		return `Telegram:${name}`;
+	}
+	if (channelId.startsWith("email-")) {
+		return `Email:${channelId.replace("email-", "")}`;
+	}
+	if (channelId.startsWith("web-")) {
+		return `Web:${channelId}`;
+	}
+	return channelId;
+}
+
+/**
+ * Get a short display name for a channel (used in attention pointer).
+ */
+function getChannelDisplayName(channelId: string, adaptersList: PlatformAdapter[]): string {
+	for (const adapter of adaptersList) {
+		const ch = adapter.getChannel(channelId);
+		if (ch) {
+			if (isSlackChannel(channelId)) return `#${ch.name}`;
+			return `${adapter.name}:${ch.name}`;
+		}
+	}
+	return channelId;
 }
 
 // ============================================================================
@@ -263,16 +301,23 @@ const channelStates = new Map<string, ChannelState>();
 
 /**
  * Get the channel name resolver for tagging messages with source channel.
- * Reads from the first Slack adapter's metadata.
+ * Reads from ALL adapters — Slack, Telegram, Email, Web.
  */
 function getChannelNameMap(): Map<string, string> {
 	const map = new Map<string, string>();
 	for (const adapter of adapters) {
-		if (adapter.name === "slack") {
-			for (const ch of adapter.getAllChannels()) {
+		for (const ch of adapter.getAllChannels()) {
+			if (isSlackChannel(ch.id)) {
+				map.set(ch.id, `#${ch.name}`);
+			} else if (/^-?\d+$/.test(ch.id)) {
+				map.set(ch.id, `Telegram:${ch.name}`);
+			} else if (ch.id.startsWith("email-")) {
+				map.set(ch.id, `Email:${ch.id.replace("email-", "")}`);
+			} else if (ch.id.startsWith("web-")) {
+				map.set(ch.id, `Web:${ch.name}`);
+			} else {
 				map.set(ch.id, ch.name);
 			}
-			break;
 		}
 	}
 	return map;
@@ -282,7 +327,7 @@ function getState(channelId: string, formatInstructions: string): ChannelState {
 	const trunkKey = resolveTrunk(channelId);
 	let state = channelStates.get(trunkKey);
 	if (!state) {
-		const isTrunk = trunkKey === SLACK_TRUNK_KEY;
+		const isTrunk = trunkKey === TRUNK_KEY;
 		const channelDir = join(workingDir, trunkKey);
 		// send_message available on ALL channels for cross-channel messaging
 		const extraTools = [createSendMessageTool(adapters)];
@@ -292,13 +337,17 @@ function getState(channelId: string, formatInstructions: string): ChannelState {
 		const stateRef: { current: ChannelState | null } = { current: null };
 		if (isTrunk) {
 			extraTools.push(createSetWorkingChannelTool(adapters, (newChannelId: string) => {
-				const slackAdapter = adapters.find((a) => a.name === "slack");
-				const channel = slackAdapter?.getChannel(newChannelId);
-				if (!channel) return undefined;
-				if (stateRef.current) {
-					stateRef.current.displayChannelId = newChannelId;
+				// Look across all adapters for the channel
+				for (const adapter of adapters) {
+					const channel = adapter.getChannel(newChannelId);
+					if (channel) {
+						if (stateRef.current) {
+							stateRef.current.displayChannelId = newChannelId;
+						}
+						return getChannelDisplayName(newChannelId, adapters);
+					}
 				}
-				return channel.name;
+				return undefined;
 			}));
 		}
 
@@ -358,15 +407,16 @@ const handler: MomHandler = {
 		const userName = user?.userName || event.user || "unknown";
 
 		// Tag with source channel for trunk awareness
-		const isCrossChannel = isSlackChannel(event.channel) && event.channel !== state.displayChannelId;
+		const isCrossChannel = event.channel !== state.displayChannelId;
 		let formattedMessage: string;
 
 		if (isCrossChannel) {
-			const channelName = adapter.getChannel(event.channel)?.name || event.channel;
-			formattedMessage = `[${timestamp}] [#${channelName} | ${event.channel}] [${userName}]: ${event.text}`;
+			const channelLabel = getChannelLabel(event.channel, adapter);
+			const currentLabel = getChannelDisplayName(state.displayChannelId, adapters);
+			formattedMessage = `[${timestamp}] [${channelLabel}] [${userName}]: ${event.text}`;
 
 			// Add harness proposal for attention shift
-			formattedMessage += `\n\n---\n[HARNESS] A message just arrived from #${channelName} (${event.channel}) while you were attending to #${adapter.getChannel(state.displayChannelId)?.name || state.displayChannelId}. You can:\n- Respond naturally here (your output goes to #${adapter.getChannel(state.displayChannelId)?.name || state.displayChannelId})\n- Use send_message to acknowledge them on #${channelName}\n- Use set_working_channel to shift your attention to #${channelName}\nDecide based on urgency and context.`;
+			formattedMessage += `\n\n---\n[HARNESS] A message just arrived from ${channelLabel} while you were attending to ${currentLabel}. You can:\n- Respond naturally here (your output goes to ${currentLabel})\n- Use send_message to acknowledge them on ${channelLabel}\n- Use set_working_channel to shift your attention there\nDecide based on urgency and context.`;
 		} else {
 			formattedMessage = `[${timestamp}] [${userName}]: ${event.text}`;
 		}
@@ -398,13 +448,8 @@ const handler: MomHandler = {
 
 		const state = getState(event.channel, platform.formatInstructions);
 
-		// For trunk channels, tag the event text with source channel info
-		if (isSlackChannel(event.channel) && resolveTrunk(event.channel) === SLACK_TRUNK_KEY) {
-			const channelName = platform.getChannel(event.channel)?.name || event.channel;
-			// Store original text, tag with channel for trunk context
-			event = { ...event, text: event.text, channel: event.channel };
-			// The runner will pick up the display channel from state and tag the message
-		}
+		// For trunk channels, the runner tags messages with source channel in the context
+		// (no event mutation needed — tagging happens in agent.ts user message construction)
 
 		// Start run
 		state.running = true;
