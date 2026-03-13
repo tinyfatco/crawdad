@@ -986,10 +986,35 @@ function createRunner(
 
 			log.logInfo(`[run] calling session.prompt() with ${userMessage.length} char message, ${imageAttachments.length} images`);
 			const tPrompt = performance.now();
+
+			// Watchdog: log if prompt hasn't completed after 30s, 60s, 120s
+			let promptCompleted = false;
+			const watchdog30 = setTimeout(() => {
+				if (!promptCompleted) {
+					log.logWarning(`[watchdog] session.prompt() still running after 30s. stopReason=${runState.stopReason} isStreaming=${(currentSession as any).isStreaming}`);
+					// Check agent internal state
+					const agentState = (currentSession as any).agent?._state;
+					if (agentState) {
+						log.logWarning(`[watchdog] agent state: isStreaming=${agentState.isStreaming} pendingToolCalls=${agentState.pendingToolCalls?.size || 0} error=${agentState.error || 'none'} msgs=${agentState.messages?.length || 0}`);
+					}
+				}
+			}, 30000);
+			const watchdog60 = setTimeout(() => {
+				if (!promptCompleted) {
+					log.logWarning(`[watchdog] session.prompt() still running after 60s — likely hung. stopReason=${runState.stopReason}`);
+				}
+			}, 60000);
+
 			try {
 				await currentSession.prompt(userMessage, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+				promptCompleted = true;
+				clearTimeout(watchdog30);
+				clearTimeout(watchdog60);
 				log.logInfo(`[perf] session.prompt completed: ${(performance.now() - tPrompt).toFixed(0)}ms, stopReason=${runState.stopReason}`);
 			} catch (promptErr) {
+				promptCompleted = true;
+				clearTimeout(watchdog30);
+				clearTimeout(watchdog60);
 				const errMsg = promptErr instanceof Error ? promptErr.message : String(promptErr);
 				const stack = promptErr instanceof Error ? promptErr.stack : undefined;
 				log.logWarning(`[run] session.prompt() threw: ${errMsg}${stack ? `\n${stack}` : ""}`);
