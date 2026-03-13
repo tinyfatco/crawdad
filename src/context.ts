@@ -192,11 +192,19 @@ export function syncLogToSessionManager(
 	// Sort by timestamp and add to session
 	newMessages.sort((a, b) => a.timestamp - b.timestamp);
 
-	for (const { message } of newMessages) {
+	// In trunk mode, cap to most recent 50 messages to avoid blowing the context window.
+	// These get persisted in context.jsonl — subsequent runs won't re-sync them.
+	// Compaction handles the rest naturally.
+	const MAX_TRUNK_SYNC = 50;
+	const toSync = isTrunk && newMessages.length > MAX_TRUNK_SYNC
+		? newMessages.slice(-MAX_TRUNK_SYNC)
+		: newMessages;
+
+	for (const { message } of toSync) {
 		sessionManager.appendMessage(message);
 	}
 
-	return newMessages.length;
+	return toSync.length;
 }
 
 // ============================================================================
