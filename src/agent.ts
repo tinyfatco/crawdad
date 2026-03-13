@@ -776,8 +776,8 @@ function createRunner(
 			// sync must happen before buildSessionContext, but memory/skills are independent.
 			// For trunk mode, sync logs from all Slack channel directories
 			const syncedCount = isTrunk
-				? syncLogToSessionManager(sm, channelDir, ctx.message.ts, channelNameMap)
-				: syncLogToSessionManager(sm, channelDir, ctx.message.ts);
+				? await syncLogToSessionManager(sm, channelDir, ctx.message.ts, channelNameMap)
+				: await syncLogToSessionManager(sm, channelDir, ctx.message.ts);
 			if (syncedCount > 0) {
 				log.logInfo(`[${channelId}] Synced ${syncedCount} messages from log.jsonl`);
 			}

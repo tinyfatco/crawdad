@@ -12,7 +12,8 @@
 
 import type { UserMessage } from "@mariozechner/pi-ai";
 import type { SessionManager, SessionMessageEntry } from "@mariozechner/pi-coding-agent";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { readdir, readFile, access } from "fs/promises";
 import { dirname, join } from "path";
 
 // ============================================================================
@@ -43,12 +44,12 @@ interface LogMessage {
  * @param channelNameMap - For trunk mode: maps channel IDs to names for message tagging
  * @returns Number of messages synced
  */
-export function syncLogToSessionManager(
+export async function syncLogToSessionManager(
 	sessionManager: SessionManager,
 	channelDir: string,
 	excludeTs?: string,
 	channelNameMap?: Map<string, string>,
-): number {
+): Promise<number> {
 	const isTrunk = !!channelNameMap;
 
 	// Build set of existing message content from session
@@ -60,18 +61,12 @@ export function syncLogToSessionManager(
 			if (msg.role === "user" && msg.content !== undefined) {
 				const content = msg.content;
 				if (typeof content === "string") {
-					// Strip timestamp prefix for comparison (live messages have it, synced don't)
-					// Format: [YYYY-MM-DD HH:MM:SS+HH:MM] [#channel | CID] [username]: text
-					// or:    [YYYY-MM-DD HH:MM:SS+HH:MM] [username]: text
 					let normalized = content.replace(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}\] /, "");
-					// Strip channel tag if present
 					normalized = normalized.replace(/^\[#[^\]]+\s*\|\s*[^\]]+\]\s*/, "");
-					// Strip attachments section
 					const attachmentsIdx = normalized.indexOf("\n\n<attachments>\n");
 					if (attachmentsIdx !== -1) {
 						normalized = normalized.substring(0, attachmentsIdx);
 					}
-					// Strip HARNESS proposals
 					const harnessIdx = normalized.indexOf("\n\n---\n[HARNESS]");
 					if (harnessIdx !== -1) {
 						normalized = normalized.substring(0, harnessIdx);
@@ -110,22 +105,30 @@ export function syncLogToSessionManager(
 
 	if (isTrunk) {
 		// Trunk mode: read log.jsonl from all Slack channel subdirectories
+		// Uses async I/O to avoid blocking the event loop on s3fs mounts
 		const workspaceDir = join(channelDir, "..");
 		try {
-			const entries = readdirSync(workspaceDir, { withFileTypes: true });
-			for (const entry of entries) {
-				if (entry.isDirectory() && /^[CDG]/.test(entry.name)) {
+			const entries = await readdir(workspaceDir, { withFileTypes: true });
+			const checks = entries
+				.filter((entry) => entry.isDirectory() && /^[CDG]/.test(entry.name))
+				.map(async (entry) => {
 					const logPath = join(workspaceDir, entry.name, "log.jsonl");
-					if (existsSync(logPath)) {
-						logFiles.push({ path: logPath, channelId: entry.name });
+					try {
+						await access(logPath);
+						return { path: logPath, channelId: entry.name };
+					} catch {
+						return null;
 					}
-				}
+				});
+			const results = await Promise.all(checks);
+			for (const r of results) {
+				if (r) logFiles.push(r);
 			}
 		} catch {
 			// Workspace dir doesn't exist yet — no logs to sync
 		}
 	} else {
-		// Single channel mode
+		// Single channel mode — sync, fine for local file
 		const logFile = join(channelDir, "log.jsonl");
 		if (existsSync(logFile)) {
 			logFiles.push({ path: logFile });
@@ -134,10 +137,28 @@ export function syncLogToSessionManager(
 
 	if (logFiles.length === 0) return 0;
 
+	// Read all log files in parallel (critical for s3fs where each read is an HTTP round-trip)
+	const PER_FILE_TIMEOUT = 5000;
+	const fileReads = logFiles.map(async ({ path: logFile, channelId }) => {
+		try {
+			const content = await Promise.race([
+				readFile(logFile, "utf-8"),
+				new Promise<string>((_, reject) =>
+					setTimeout(() => reject(new Error(`timeout reading ${logFile}`)), PER_FILE_TIMEOUT),
+				),
+			]);
+			return { content, channelId };
+		} catch {
+			return null; // Skip files that fail or timeout
+		}
+	});
+	const fileResults = await Promise.all(fileReads);
+
 	const newMessages: Array<{ timestamp: number; message: UserMessage }> = [];
 
-	for (const { path: logFile, channelId: sourceChannelId } of logFiles) {
-		const logContent = readFileSync(logFile, "utf-8");
+	for (const result of fileResults) {
+		if (!result) continue;
+		const { content: logContent, channelId: sourceChannelId } = result;
 		const logLines = logContent.trim().split("\n").filter(Boolean);
 
 		for (const line of logLines) {
@@ -148,28 +169,20 @@ export function syncLogToSessionManager(
 				const date = logMsg.date;
 				if (!msgTs || !date) continue;
 
-				// Skip the current message being processed (will be added via prompt())
 				if (excludeTs && msgTs === excludeTs) continue;
-
-				// Skip bot messages - added through agent flow
 				if (logMsg.isBot) continue;
 
-				// Build the message text as it would appear in context
 				const userName = logMsg.userName || logMsg.user || "unknown";
 				let messageText: string;
 
 				if (isTrunk && sourceChannelId) {
-					// Tag with source channel for trunk awareness
-					const channelName = channelNameMap.get(sourceChannelId) || sourceChannelId;
+					const channelName = channelNameMap!.get(sourceChannelId) || sourceChannelId;
 					messageText = `[#${channelName} | ${sourceChannelId}] [${userName}]: ${logMsg.text || ""}`;
 				} else {
 					messageText = `[${userName}]: ${logMsg.text || ""}`;
 				}
 
-				// Normalize for dedup (strip channel tag)
 				const normalized = messageText.replace(/^\[#[^\]]+\s*\|\s*[^\]]+\]\s*/, "");
-
-				// Skip if this exact message text is already in context
 				if (existingMessages.has(normalized)) continue;
 
 				const msgTime = new Date(date).getTime() || Date.now();
@@ -180,7 +193,7 @@ export function syncLogToSessionManager(
 				};
 
 				newMessages.push({ timestamp: msgTime, message: userMessage });
-				existingMessages.add(normalized); // Track to avoid duplicates within this sync
+				existingMessages.add(normalized);
 			} catch {
 				// Skip malformed lines
 			}
@@ -189,12 +202,8 @@ export function syncLogToSessionManager(
 
 	if (newMessages.length === 0) return 0;
 
-	// Sort by timestamp and add to session
 	newMessages.sort((a, b) => a.timestamp - b.timestamp);
 
-	// In trunk mode, cap to most recent 50 messages to avoid blowing the context window.
-	// These get persisted in context.jsonl — subsequent runs won't re-sync them.
-	// Compaction handles the rest naturally.
 	const MAX_TRUNK_SYNC = 50;
 	const toSync = isTrunk && newMessages.length > MAX_TRUNK_SYNC
 		? newMessages.slice(-MAX_TRUNK_SYNC)
