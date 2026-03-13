@@ -600,8 +600,19 @@ function createRunner(
 
 	// Event handler — extracted so it can be attached when session is lazily created
 	const eventHandler = async (event: any) => {
+		// Log ALL events for debugging
+		const eventType = event.type || "unknown";
+		if (!["tool_execution_start", "tool_execution_end", "message_start", "message_end", "auto_compaction_start", "auto_compaction_end", "auto_retry_start"].includes(eventType)) {
+			log.logInfo(`[event] unhandled event type: ${eventType} ${JSON.stringify(event).substring(0, 200)}`);
+		} else {
+			log.logInfo(`[event] ${eventType}`);
+		}
+
 		// Skip if no active run
-		if (!runState.ctx || !runState.logCtx || !runState.queue) return;
+		if (!runState.ctx || !runState.logCtx || !runState.queue) {
+			log.logWarning(`[event] ${eventType} received but no active run state (ctx=${!!runState.ctx} logCtx=${!!runState.logCtx} queue=${!!runState.queue})`);
+			return;
+		}
 
 		const { ctx, logCtx, queue, pendingTools } = runState;
 
@@ -668,14 +679,20 @@ function createRunner(
 			}
 		} else if (event.type === "message_end") {
 			const agentEvent = event as AgentEvent & { type: "message_end" };
+			log.logInfo(`[event] message_end role=${agentEvent.message.role}`);
 			if (agentEvent.message.role === "assistant") {
 				const assistantMsg = agentEvent.message as any;
+
+				// Log detailed info about the assistant response
+				const contentTypes = agentEvent.message.content.map((c: any) => c.type);
+				log.logInfo(`[event] assistant message_end: stopReason=${assistantMsg.stopReason || "none"} errorMessage=${assistantMsg.errorMessage || "none"} contentTypes=[${contentTypes.join(",")}] contentParts=${agentEvent.message.content.length}`);
 
 				if (assistantMsg.stopReason) {
 					runState.stopReason = assistantMsg.stopReason;
 				}
 				if (assistantMsg.errorMessage) {
 					runState.errorMessage = assistantMsg.errorMessage;
+					log.logWarning(`[event] assistant error: ${assistantMsg.errorMessage}`);
 				}
 
 				if (assistantMsg.usage) {
@@ -866,11 +883,15 @@ function createRunner(
 			runState.queue = {
 				enqueue(fn: () => Promise<void>, errorContext: string): void {
 					queueChain = queueChain.then(async () => {
+						const tq = performance.now();
+						log.logInfo(`[queue] start: ${errorContext}`);
 						try {
 							await fn();
+							log.logInfo(`[queue] done: ${errorContext} (${(performance.now() - tq).toFixed(0)}ms)`);
 						} catch (err) {
 							const errMsg = err instanceof Error ? err.message : String(err);
-							log.logWarning(`Platform API error (${errorContext})`, errMsg);
+							const stack = err instanceof Error ? err.stack : undefined;
+							log.logWarning(`Platform API error (${errorContext})`, `${errMsg}${stack ? `\n${stack}` : ""}`);
 							try {
 								await ctx.respondInThread(`_Error: ${errMsg}_`);
 							} catch {
@@ -945,32 +966,54 @@ function createRunner(
 				newUserMessage: userMessage,
 				imageAttachmentCount: imageAttachments.length,
 			};
-			await writeFile(join(channelDir, "last_prompt.jsonl"), JSON.stringify(debugContext, null, 2));
+			try {
+				const tWrite = performance.now();
+				await writeFile(join(channelDir, "last_prompt.jsonl"), JSON.stringify(debugContext, null, 2));
+				log.logInfo(`[perf] writeFile last_prompt.jsonl: ${(performance.now() - tWrite).toFixed(0)}ms`);
+			} catch (err) {
+				log.logWarning(`[debug] Failed to write last_prompt.jsonl: ${err instanceof Error ? err.message : String(err)}`);
+			}
 
+			log.logInfo(`[run] calling session.prompt() with ${userMessage.length} char message, ${imageAttachments.length} images`);
 			const tPrompt = performance.now();
-			await currentSession.prompt(userMessage, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
-			log.logInfo(`[perf] session.prompt (incl API): ${(performance.now() - tPrompt).toFixed(0)}ms`);
+			try {
+				await currentSession.prompt(userMessage, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+				log.logInfo(`[perf] session.prompt completed: ${(performance.now() - tPrompt).toFixed(0)}ms, stopReason=${runState.stopReason}`);
+			} catch (promptErr) {
+				const errMsg = promptErr instanceof Error ? promptErr.message : String(promptErr);
+				const stack = promptErr instanceof Error ? promptErr.stack : undefined;
+				log.logWarning(`[run] session.prompt() threw: ${errMsg}${stack ? `\n${stack}` : ""}`);
+				runState.stopReason = "error";
+				runState.errorMessage = errMsg;
+			}
 
 			// If overflow error triggered background compaction+retry, wait for it.
 			// Agent.emit() doesn't await async handlers, so _runAutoCompaction runs
 			// detached. waitForIdle() waits for any in-flight agent.continue() call.
 			if (runState.stopReason === "error") {
+				log.logInfo(`[run] stopReason=error, waiting for agent idle (background compaction/retry)...`);
 				await agent.waitForIdle();
+				log.logInfo(`[run] agent idle reached`);
 
 				// Re-read result — background retry may have succeeded
 				const msgs = currentSession.messages;
 				const last = msgs.filter((m) => m.role === "assistant").pop() as any;
 				if (last && last.stopReason && last.stopReason !== "error") {
+					log.logInfo(`[run] background retry succeeded, new stopReason=${last.stopReason}`);
 					runState.stopReason = last.stopReason;
 					runState.errorMessage = undefined;
 				}
 			}
 
 			// Wait for queued messages
+			log.logInfo(`[run] waiting for queued messages...`);
 			await queueChain;
+			log.logInfo(`[run] queue drained`);
 
 			// Handle error case - update main message and post error to thread
+			log.logInfo(`[run] post-prompt: stopReason=${runState.stopReason} errorMessage=${runState.errorMessage || "none"}`);
 			if (runState.stopReason === "error" && runState.errorMessage) {
+				log.logInfo(`[run] sending error response to channel`);
 				try {
 					await ctx.sendFinalResponse("_Sorry, something went wrong_");
 					await ctx.respondInThread(`_Error: ${runState.errorMessage}_`);
@@ -988,6 +1031,8 @@ function createRunner(
 						.map((c) => c.text)
 						.join("\n") || "";
 
+				log.logInfo(`[run] finalText length=${finalText.length} preview=${finalText.substring(0, 100)}`);
+
 				// Check for [SILENT] marker - delete message and thread instead of posting
 				if (finalText.trim() === "[SILENT]" || finalText.trim().startsWith("[SILENT]")) {
 					try {
@@ -998,16 +1043,20 @@ function createRunner(
 						log.logWarning("Failed to delete message for silent response", errMsg);
 					}
 				} else if (finalText.trim()) {
+					log.logInfo(`[run] calling sendFinalResponse (${finalText.length} chars)`);
 					try {
 						const mainText =
 							finalText.length > MAX_MESSAGE_LENGTH
 								? `${finalText.substring(0, MAX_MESSAGE_LENGTH - 50)}\n\n_(see thread for full response)_`
 								: finalText;
 						await ctx.sendFinalResponse(mainText);
+						log.logInfo(`[run] sendFinalResponse completed`);
 					} catch (err) {
 						const errMsg = err instanceof Error ? err.message : String(err);
 						log.logWarning("Failed to replace message with final text", errMsg);
 					}
+				} else {
+					log.logInfo(`[run] no final text to send (empty response)`);
 				}
 			}
 

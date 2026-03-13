@@ -339,6 +339,7 @@ const handler: MomHandler = {
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): void {
 		const trunkKey = resolveTrunk(event.channel);
 		const state = channelStates.get(trunkKey);
+		log.logInfo(`[steer] channel=${event.channel} trunk=${trunkKey} running=${state?.running ?? false} displayChannelId=${state?.displayChannelId ?? "none"}`);
 		if (!state?.running) {
 			log.logWarning(`[steer] handleSteer called but trunk ${trunkKey} not running`);
 			return;
@@ -396,11 +397,16 @@ const handler: MomHandler = {
 			if (handled) return;
 		}
 
+		const trunkKey = resolveTrunk(event.channel);
+		log.logInfo(`[handleEvent] channel=${event.channel} trunk=${trunkKey} platform=${platform.name} text="${event.text.substring(0, 50)}"`);
+
 		const state = getState(event.channel, platform.formatInstructions);
+		log.logInfo(`[handleEvent] state obtained: running=${state.running} displayChannelId=${state.displayChannelId}`);
 
 		// For trunk channels, tag the event text with source channel info
-		if (isSlackChannel(event.channel) && resolveTrunk(event.channel) === SLACK_TRUNK_KEY) {
+		if (isSlackChannel(event.channel) && trunkKey === SLACK_TRUNK_KEY) {
 			const channelName = platform.getChannel(event.channel)?.name || event.channel;
+			log.logInfo(`[handleEvent] trunk mode: channelName=${channelName} displayChannelId=${state.displayChannelId}`);
 			// Store original text, tag with channel for trunk context
 			event = { ...event, text: event.text, channel: event.channel };
 			// The runner will pick up the display channel from state and tag the message
@@ -410,17 +416,25 @@ const handler: MomHandler = {
 		state.running = true;
 		state.stopRequested = false;
 
-		log.logInfo(`[${platform.name}:${event.channel}] Starting run (trunk: ${resolveTrunk(event.channel)}): ${event.text.substring(0, 50)}`);
+		log.logInfo(`[${platform.name}:${event.channel}] Starting run (trunk: ${trunkKey}): ${event.text.substring(0, 50)}`);
 
 		try {
 			// Create context from adapter — targets the DISPLAY channel (real Slack channel)
+			log.logInfo(`[handleEvent] creating context for channel=${event.channel}`);
 			const ctx = platform.createContext(event, state.store, isEvent);
+			log.logInfo(`[handleEvent] context created, msg.channel=${ctx.message.channel} channelName=${ctx.channelName}`);
 
 			// Run the agent
+			log.logInfo(`[handleEvent] calling setTyping(true)`);
 			await ctx.setTyping(true);
+			log.logInfo(`[handleEvent] calling setWorking(true)`);
 			await ctx.setWorking(true);
+			log.logInfo(`[handleEvent] calling runner.run()`);
 			const result = await state.runner.run(ctx, state.store);
+			log.logInfo(`[handleEvent] runner.run() returned: stopReason=${result.stopReason} errorMessage=${result.errorMessage || "none"}`);
+			log.logInfo(`[handleEvent] calling setWorking(false)`);
 			await ctx.setWorking(false);
+			log.logInfo(`[handleEvent] run complete`);
 
 			if (result.stopReason === "aborted" && state.stopRequested) {
 				if (state.stopMessageTs) {
@@ -431,12 +445,15 @@ const handler: MomHandler = {
 				}
 			}
 		} catch (err) {
+			const errMsg = err instanceof Error ? err.message : String(err);
+			const stack = err instanceof Error ? err.stack : undefined;
 			log.logWarning(
 				`[${platform.name}:${event.channel}] Run error`,
-				err instanceof Error ? err.message : String(err),
+				`${errMsg}${stack ? `\n${stack}` : ""}`,
 			);
 		} finally {
 			state.running = false;
+			log.logInfo(`[handleEvent] finally: state.running set to false for trunk=${trunkKey}`);
 		}
 	},
 };
@@ -536,6 +553,16 @@ const eventsWatcher = createEventsWatcher(workingDir, allAdapters);
 eventsWatcher.start();
 log.logInfo(`[perf] events watcher started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 log.logInfo(`[perf] TOTAL STARTUP: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
+
+// Catch unhandled errors — these indicate bugs in our code or pi-agent
+process.on("unhandledRejection", (reason, promise) => {
+	const msg = reason instanceof Error ? `${reason.message}\n${reason.stack}` : String(reason);
+	log.logWarning(`[UNHANDLED REJECTION] ${msg}`);
+});
+
+process.on("uncaughtException", (err) => {
+	log.logWarning(`[UNCAUGHT EXCEPTION] ${err.message}\n${err.stack}`);
+});
 
 // Handle shutdown
 process.on("SIGINT", () => {
