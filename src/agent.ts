@@ -600,10 +600,15 @@ function createRunner(
 
 	// Event handler — extracted so it can be attached when session is lazily created
 	const eventHandler = async (event: any) => {
-		// Log ALL events for debugging
 		const eventType = event.type || "unknown";
-		if (!["tool_execution_start", "tool_execution_end", "message_start", "message_end", "auto_compaction_start", "auto_compaction_end", "auto_retry_start"].includes(eventType)) {
-			log.logInfo(`[event] unhandled event type: ${eventType} ${JSON.stringify(event).substring(0, 200)}`);
+		try {
+		// Log events — skip noisy message_update deltas
+		if (eventType === "message_update") {
+			// Only log toolcall events, not every text delta
+			const subType = event.assistantMessageEvent?.type;
+			if (subType && subType.startsWith("toolcall")) {
+				log.logInfo(`[event] message_update:${subType}`);
+			}
 		} else {
 			log.logInfo(`[event] ${eventType}`);
 		}
@@ -752,6 +757,10 @@ function createRunner(
 				"retry",
 			);
 		}
+		} catch (handlerErr) {
+			const msg = handlerErr instanceof Error ? `${handlerErr.message}\n${handlerErr.stack}` : String(handlerErr);
+			log.logWarning(`[event] HANDLER CRASHED on ${eventType}: ${msg}`);
+		}
 	};
 
 	// Message length limit (adapter-specific)
@@ -882,6 +891,7 @@ function createRunner(
 			let queueChain = Promise.resolve();
 			runState.queue = {
 				enqueue(fn: () => Promise<void>, errorContext: string): void {
+					log.logInfo(`[queue] enqueued: ${errorContext}`);
 					queueChain = queueChain.then(async () => {
 						const tq = performance.now();
 						log.logInfo(`[queue] start: ${errorContext}`);
