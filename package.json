@@ -15,7 +15,8 @@
 	],
 	"scripts": {
 		"clean": "rm -rf dist",
-		"build": "tsc && chmod +x dist/main.js",
+		"patch": "node scripts/patch-agent-loop.js",
+		"build": "npm run patch && tsc && chmod +x dist/main.js",
 		"dev": "tsc --watch --preserveWatchOutput",
 		"prepublishOnly": "npm run clean && npm run build"
 	},

@@ -947,6 +947,8 @@ function createRunner(
 			};
 			await writeFile(join(channelDir, "last_prompt.jsonl"), JSON.stringify(debugContext, null, 2));
 
+			log.logInfo(`[trunk] Pre-prompt: ${currentSession.messages.length} messages in context, trunk=${isTrunk}`);
+
 			const tPrompt = performance.now();
 			await currentSession.prompt(userMessage, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
 			log.logInfo(`[perf] session.prompt (incl API): ${(performance.now() - tPrompt).toFixed(0)}ms`);
