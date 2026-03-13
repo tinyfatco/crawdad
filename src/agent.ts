@@ -55,32 +55,35 @@ function getImageMimeType(filename: string): string | undefined {
 	return IMAGE_MIME_TYPES[filename.toLowerCase().split(".").pop() || ""];
 }
 
-function getMemory(channelDir: string): string {
+function getMemory(channelDir: string, isTrunk = false): string {
 	const parts: string[] = [];
 
 	// Read workspace-level memory (shared across all channels)
-	const workspaceMemoryPath = join(channelDir, "..", "MEMORY.md");
+	const workspaceDir = isTrunk ? join(channelDir, "..") : join(channelDir, "..");
+	const workspaceMemoryPath = join(workspaceDir, "MEMORY.md");
 	if (existsSync(workspaceMemoryPath)) {
 		try {
 			const content = readFileSync(workspaceMemoryPath, "utf-8").trim();
 			if (content) {
-				parts.push(`### Global Workspace Memory\n${content}`);
+				parts.push(`### Workspace Memory\n${content}`);
 			}
 		} catch (error) {
 			log.logWarning("Failed to read workspace memory", `${workspaceMemoryPath}: ${error}`);
 		}
 	}
 
-	// Read channel-specific memory
-	const channelMemoryPath = join(channelDir, "MEMORY.md");
-	if (existsSync(channelMemoryPath)) {
-		try {
-			const content = readFileSync(channelMemoryPath, "utf-8").trim();
-			if (content) {
-				parts.push(`### Channel-Specific Memory\n${content}`);
+	// For trunk mode, skip channel-specific memory (it fragments consciousness)
+	if (!isTrunk) {
+		const channelMemoryPath = join(channelDir, "MEMORY.md");
+		if (existsSync(channelMemoryPath)) {
+			try {
+				const content = readFileSync(channelMemoryPath, "utf-8").trim();
+				if (content) {
+					parts.push(`### Channel-Specific Memory\n${content}`);
+				}
+			} catch (error) {
+				log.logWarning("Failed to read channel memory", `${channelMemoryPath}: ${error}`);
 			}
-		} catch (error) {
-			log.logWarning("Failed to read channel memory", `${channelMemoryPath}: ${error}`);
 		}
 	}
 
@@ -144,8 +147,10 @@ function buildSystemPrompt(
 	users: UserInfo[],
 	skills: Skill[],
 	formatInstructions: string,
+	trunkInfo?: { displayChannelId: string; displayChannelName?: string },
 ): string {
-	const channelPath = `${workspacePath}/${channelId}`;
+	const isTrunk = channelId === "_slack_trunk";
+	const channelPath = isTrunk ? `${workspacePath}/_slack_trunk` : `${workspacePath}/${channelId}`;
 	const isDocker = sandboxConfig.type === "docker";
 
 	// Format channel mappings
@@ -165,6 +170,43 @@ function buildSystemPrompt(
 - Bash working directory: ${process.cwd()}
 - Be careful with system modifications`;
 
+	// Trunk-specific context section
+	const trunkContext = isTrunk && trunkInfo ? `
+## Attention Model
+You have a unified consciousness across all Slack channels. You are always AWARE of messages from every channel (they all enter your context), but you ATTEND to one channel at a time — that's where your visible output goes.
+
+**Currently attending:** #${trunkInfo.displayChannelName || trunkInfo.displayChannelId} (${trunkInfo.displayChannelId})
+
+Messages from other channels are tagged with their source: [#channel-name | CHANNEL_ID] [user]: text
+When a message arrives from another channel mid-run, the harness will present it to you. You decide:
+- Respond naturally (output goes to your current attention channel)
+- Use \`send_message\` to acknowledge them on the other channel
+- Use \`set_working_channel\` to shift your attention there
+
+Your default text response always goes to wherever your attention is pointed.` : "";
+
+	const workspaceLayout = isTrunk ? `## Workspace Layout
+${workspacePath}/
+├── MEMORY.md                    # Your memory (shared across all channels)
+├── settings.json                # Model & preferences (see below)
+├── skills/                      # Global CLI tools you create
+├── _slack_trunk/                # Unified Slack context
+│   ├── context.jsonl            # Your continuous context (all Slack channels)
+│   └── scratch/                 # Your working directory
+├── C.../                        # Per-channel logs (written by adapters)
+│   └── log.jsonl                # Message history for that channel
+└── ...other channel dirs/` : `## Workspace Layout
+${workspacePath}/
+├── MEMORY.md                    # Global memory (all channels)
+├── settings.json                # Model & preferences (see below)
+├── skills/                      # Global CLI tools you create
+└── ${channelId}/                # This channel
+    ├── MEMORY.md                # Channel-specific memory
+    ├── log.jsonl                # Message history (no tool results)
+    ├── attachments/             # User-shared files
+    ├── scratch/                 # Your working directory
+    └── skills/                  # Channel-specific tools`;
+
 	return `You are mom, a chat bot assistant. Be concise. No emojis.
 
 ## Context
@@ -173,6 +215,7 @@ function buildSystemPrompt(
 - For older history beyond your context, search log.jsonl (contains user messages and your final responses, but not tool results).
 
 ${formatInstructions}
+${trunkContext}
 
 ## Channels
 ${channelMappings}
@@ -183,17 +226,7 @@ ${userMappings}
 ## Environment
 ${envDescription}
 
-## Workspace Layout
-${workspacePath}/
-├── MEMORY.md                    # Global memory (all channels)
-├── settings.json                # Model & preferences (see below)
-├── skills/                      # Global CLI tools you create
-└── ${channelId}/                # This channel
-    ├── MEMORY.md                # Channel-specific memory
-    ├── log.jsonl                # Message history (no tool results)
-    ├── attachments/             # User-shared files
-    ├── scratch/                 # Your working directory
-    └── skills/                  # Channel-specific tools
+${workspaceLayout}
 
 ## Model Selection
 You can switch which AI model you use. To change, write to \`${workspacePath}/settings.json\`:
@@ -294,9 +327,11 @@ When writing programs that create immediate events (email watchers, webhook hand
 Maximum 5 events can be queued. Don't create excessive immediate or periodic events.
 
 ## Memory
-Write to MEMORY.md files to persist context across conversations.
+Write to MEMORY.md to persist context across conversations.${isTrunk ? `
+- Write to ${workspacePath}/MEMORY.md — this is your single unified memory.
+- Do NOT create channel-specific MEMORY.md files. Your consciousness is unified.` : `
 - Global (${workspacePath}/MEMORY.md): skills, preferences, project info
-- Channel (${channelPath}/MEMORY.md): channel-specific decisions, ongoing work
+- Channel (${channelPath}/MEMORY.md): channel-specific decisions, ongoing work`}
 Update when you learn something important or when asked to remember something.
 
 ### Current Memory
@@ -416,8 +451,10 @@ function formatToolArgs(_toolName: string, args: Record<string, unknown>): strin
 const channelRunners = new Map<string, AgentRunner>();
 
 /**
- * Get or create an AgentRunner for a channel.
- * Runners are cached - one per channel, persistent across messages.
+ * Get or create an AgentRunner for a channel (or trunk).
+ * Runners are cached - one per channel/trunk, persistent across messages.
+ *
+ * @param channelNameMap - For trunk mode: maps channel IDs to names for message tagging
  */
 export function getOrCreateRunner(
 	sandboxConfig: SandboxConfig,
@@ -426,11 +463,12 @@ export function getOrCreateRunner(
 	formatInstructions: string,
 	extraSkillsDirs: string[] = [],
 	extraTools: AgentTool<any>[] = [],
+	channelNameMap?: Map<string, string>,
 ): AgentRunner {
 	const existing = channelRunners.get(channelId);
 	if (existing) return existing;
 
-	const runner = createRunner(sandboxConfig, channelId, channelDir, formatInstructions, extraSkillsDirs, extraTools);
+	const runner = createRunner(sandboxConfig, channelId, channelDir, formatInstructions, extraSkillsDirs, extraTools, channelNameMap);
 	channelRunners.set(channelId, runner);
 	return runner;
 }
@@ -446,7 +484,9 @@ function createRunner(
 	formatInstructions: string,
 	extraSkillsDirs: string[] = [],
 	extraTools: AgentTool<any>[] = [],
+	channelNameMap?: Map<string, string>,
 ): AgentRunner {
+	const isTrunk = channelId === "_slack_trunk";
 	const t0 = performance.now();
 	const executor = createExecutor(sandboxConfig);
 	const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
@@ -734,7 +774,10 @@ function createRunner(
 			// syncLogToSessionManager reads log.jsonl, buildSessionContext reads context.jsonl,
 			// getMemory reads MEMORY.md, loadMomSkills scans skills dirs.
 			// sync must happen before buildSessionContext, but memory/skills are independent.
-			const syncedCount = syncLogToSessionManager(sm, channelDir, ctx.message.ts);
+			// For trunk mode, sync logs from all Slack channel directories
+			const syncedCount = isTrunk
+				? syncLogToSessionManager(sm, channelDir, ctx.message.ts, channelNameMap)
+				: syncLogToSessionManager(sm, channelDir, ctx.message.ts);
 			if (syncedCount > 0) {
 				log.logInfo(`[${channelId}] Synced ${syncedCount} messages from log.jsonl`);
 			}
@@ -755,7 +798,7 @@ function createRunner(
 			}
 
 			const tMem = performance.now();
-			const memory = getMemory(channelDir);
+			const memory = getMemory(channelDir, isTrunk);
 			log.logInfo(`[perf] getMemory: ${(performance.now() - tMem).toFixed(0)}ms`);
 
 			const tSkills = performance.now();
@@ -766,6 +809,10 @@ function createRunner(
 
 			// Build system prompt with fresh data
 			const currentSession = getSession();
+			const trunkInfo = isTrunk ? {
+				displayChannelId: ctx.message.channel,
+				displayChannelName: ctx.channelName || channelNameMap?.get(ctx.message.channel),
+			} : undefined;
 			const systemPrompt = buildSystemPrompt(
 				workspacePath,
 				channelId,
@@ -775,6 +822,7 @@ function createRunner(
 				ctx.users,
 				skills,
 				formatInstructions,
+				trunkInfo,
 			);
 			currentSession.agent.setSystemPrompt(systemPrompt);
 
@@ -855,7 +903,14 @@ function createRunner(
 			const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
 			const offsetMins = pad(Math.abs(offset) % 60);
 			const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetMins}`;
-			let userMessage = `[${timestamp}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
+			// For trunk mode, tag messages with source channel
+			let userMessage: string;
+			if (isTrunk) {
+				const channelName = ctx.channelName || channelNameMap?.get(ctx.message.channel) || ctx.message.channel;
+				userMessage = `[${timestamp}] [#${channelName} | ${ctx.message.channel}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
+			} else {
+				userMessage = `[${timestamp}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
+			}
 
 			const imageAttachments: ImageContent[] = [];
 			const nonImagePaths: string[] = [];

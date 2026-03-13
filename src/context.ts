@@ -12,7 +12,7 @@
 
 import type { UserMessage } from "@mariozechner/pi-ai";
 import type { SessionManager, SessionMessageEntry } from "@mariozechner/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 
 // ============================================================================
@@ -34,19 +34,22 @@ interface LogMessage {
  * This ensures that messages logged while mom wasn't running (channel chatter,
  * backfilled messages, messages while busy) are added to the LLM context.
  *
+ * In trunk mode (channelNameMap provided), reads log.jsonl from ALL Slack channel
+ * directories in the workspace and tags each message with its source channel.
+ *
  * @param sessionManager - The SessionManager to sync to
- * @param channelDir - Path to channel directory containing log.jsonl
+ * @param channelDir - Path to channel directory containing log.jsonl (or trunk dir)
  * @param excludeTs - Timestamp of current message (will be added via prompt(), not sync)
+ * @param channelNameMap - For trunk mode: maps channel IDs to names for message tagging
  * @returns Number of messages synced
  */
 export function syncLogToSessionManager(
 	sessionManager: SessionManager,
 	channelDir: string,
 	excludeTs?: string,
+	channelNameMap?: Map<string, string>,
 ): number {
-	const logFile = join(channelDir, "log.jsonl");
-
-	if (!existsSync(logFile)) return 0;
+	const isTrunk = !!channelNameMap;
 
 	// Build set of existing message content from session
 	const existingMessages = new Set<string>();
@@ -58,12 +61,20 @@ export function syncLogToSessionManager(
 				const content = msg.content;
 				if (typeof content === "string") {
 					// Strip timestamp prefix for comparison (live messages have it, synced don't)
-					// Format: [YYYY-MM-DD HH:MM:SS+HH:MM] [username]: text
+					// Format: [YYYY-MM-DD HH:MM:SS+HH:MM] [#channel | CID] [username]: text
+					// or:    [YYYY-MM-DD HH:MM:SS+HH:MM] [username]: text
 					let normalized = content.replace(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}\] /, "");
+					// Strip channel tag if present
+					normalized = normalized.replace(/^\[#[^\]]+\s*\|\s*[^\]]+\]\s*/, "");
 					// Strip attachments section
 					const attachmentsIdx = normalized.indexOf("\n\n<attachments>\n");
 					if (attachmentsIdx !== -1) {
 						normalized = normalized.substring(0, attachmentsIdx);
+					}
+					// Strip HARNESS proposals
+					const harnessIdx = normalized.indexOf("\n\n---\n[HARNESS]");
+					if (harnessIdx !== -1) {
+						normalized = normalized.substring(0, harnessIdx);
 					}
 					existingMessages.add(normalized);
 				} else if (Array.isArray(content)) {
@@ -77,9 +88,14 @@ export function syncLogToSessionManager(
 						) {
 							let normalized = (part as { type: "text"; text: string }).text;
 							normalized = normalized.replace(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}\] /, "");
+							normalized = normalized.replace(/^\[#[^\]]+\s*\|\s*[^\]]+\]\s*/, "");
 							const attachmentsIdx = normalized.indexOf("\n\n<attachments>\n");
 							if (attachmentsIdx !== -1) {
 								normalized = normalized.substring(0, attachmentsIdx);
+							}
+							const harnessIdx = normalized.indexOf("\n\n---\n[HARNESS]");
+							if (harnessIdx !== -1) {
+								normalized = normalized.substring(0, harnessIdx);
 							}
 							existingMessages.add(normalized);
 						}
@@ -89,43 +105,85 @@ export function syncLogToSessionManager(
 		}
 	}
 
-	// Read log.jsonl and find user messages not in context
-	const logContent = readFileSync(logFile, "utf-8");
-	const logLines = logContent.trim().split("\n").filter(Boolean);
+	// Collect log files to read
+	const logFiles: Array<{ path: string; channelId?: string }> = [];
+
+	if (isTrunk) {
+		// Trunk mode: read log.jsonl from all Slack channel subdirectories
+		const workspaceDir = join(channelDir, "..");
+		try {
+			const entries = readdirSync(workspaceDir, { withFileTypes: true });
+			for (const entry of entries) {
+				if (entry.isDirectory() && /^[CDG]/.test(entry.name)) {
+					const logPath = join(workspaceDir, entry.name, "log.jsonl");
+					if (existsSync(logPath)) {
+						logFiles.push({ path: logPath, channelId: entry.name });
+					}
+				}
+			}
+		} catch {
+			// Workspace dir doesn't exist yet — no logs to sync
+		}
+	} else {
+		// Single channel mode
+		const logFile = join(channelDir, "log.jsonl");
+		if (existsSync(logFile)) {
+			logFiles.push({ path: logFile });
+		}
+	}
+
+	if (logFiles.length === 0) return 0;
 
 	const newMessages: Array<{ timestamp: number; message: UserMessage }> = [];
 
-	for (const line of logLines) {
-		try {
-			const logMsg: LogMessage = JSON.parse(line);
+	for (const { path: logFile, channelId: sourceChannelId } of logFiles) {
+		const logContent = readFileSync(logFile, "utf-8");
+		const logLines = logContent.trim().split("\n").filter(Boolean);
 
-			const msgTs = logMsg.ts;
-			const date = logMsg.date;
-			if (!msgTs || !date) continue;
+		for (const line of logLines) {
+			try {
+				const logMsg: LogMessage = JSON.parse(line);
 
-			// Skip the current message being processed (will be added via prompt())
-			if (excludeTs && msgTs === excludeTs) continue;
+				const msgTs = logMsg.ts;
+				const date = logMsg.date;
+				if (!msgTs || !date) continue;
 
-			// Skip bot messages - added through agent flow
-			if (logMsg.isBot) continue;
+				// Skip the current message being processed (will be added via prompt())
+				if (excludeTs && msgTs === excludeTs) continue;
 
-			// Build the message text as it would appear in context
-			const messageText = `[${logMsg.userName || logMsg.user || "unknown"}]: ${logMsg.text || ""}`;
+				// Skip bot messages - added through agent flow
+				if (logMsg.isBot) continue;
 
-			// Skip if this exact message text is already in context
-			if (existingMessages.has(messageText)) continue;
+				// Build the message text as it would appear in context
+				const userName = logMsg.userName || logMsg.user || "unknown";
+				let messageText: string;
 
-			const msgTime = new Date(date).getTime() || Date.now();
-			const userMessage: UserMessage = {
-				role: "user",
-				content: [{ type: "text", text: messageText }],
-				timestamp: msgTime,
-			};
+				if (isTrunk && sourceChannelId) {
+					// Tag with source channel for trunk awareness
+					const channelName = channelNameMap.get(sourceChannelId) || sourceChannelId;
+					messageText = `[#${channelName} | ${sourceChannelId}] [${userName}]: ${logMsg.text || ""}`;
+				} else {
+					messageText = `[${userName}]: ${logMsg.text || ""}`;
+				}
 
-			newMessages.push({ timestamp: msgTime, message: userMessage });
-			existingMessages.add(messageText); // Track to avoid duplicates within this sync
-		} catch {
-			// Skip malformed lines
+				// Normalize for dedup (strip channel tag)
+				const normalized = messageText.replace(/^\[#[^\]]+\s*\|\s*[^\]]+\]\s*/, "");
+
+				// Skip if this exact message text is already in context
+				if (existingMessages.has(normalized)) continue;
+
+				const msgTime = new Date(date).getTime() || Date.now();
+				const userMessage: UserMessage = {
+					role: "user",
+					content: [{ type: "text", text: messageText }],
+					timestamp: msgTime,
+				};
+
+				newMessages.push({ timestamp: msgTime, message: userMessage });
+				existingMessages.add(normalized); // Track to avoid duplicates within this sync
+			} catch {
+				// Skip malformed lines
+			}
 		}
 	}
 

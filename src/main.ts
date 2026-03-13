@@ -18,6 +18,26 @@ import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
 import { createSendMessageTool } from "./tools/send-message.js";
+import { createSetWorkingChannelTool } from "./tools/set-working-channel.js";
+
+// ============================================================================
+// Trunk resolution — Slack channels share one runner/context
+// ============================================================================
+
+const SLACK_TRUNK_KEY = "_slack_trunk";
+
+/** Returns true if the channelId looks like a Slack channel (C/D/G prefix) */
+function isSlackChannel(channelId: string): boolean {
+	return /^[CDG]/.test(channelId);
+}
+
+/**
+ * Resolve a channelId to its trunk key.
+ * All Slack channels map to a shared trunk. Other adapters pass through.
+ */
+function resolveTrunk(channelId: string): string {
+	return isSlackChannel(channelId) ? SLACK_TRUNK_KEY : channelId;
+}
 
 // ============================================================================
 // Config
@@ -235,24 +255,73 @@ interface ChannelState {
 	store: ChannelStore;
 	stopRequested: boolean;
 	stopMessageTs?: string;
+	/** The display channel where output is currently routed (real channel ID, not trunk key) */
+	displayChannelId: string;
 }
 
 const channelStates = new Map<string, ChannelState>();
 
+/**
+ * Get the channel name resolver for tagging messages with source channel.
+ * Reads from the first Slack adapter's metadata.
+ */
+function getChannelNameMap(): Map<string, string> {
+	const map = new Map<string, string>();
+	for (const adapter of adapters) {
+		if (adapter.name === "slack") {
+			for (const ch of adapter.getAllChannels()) {
+				map.set(ch.id, ch.name);
+			}
+			break;
+		}
+	}
+	return map;
+}
+
 function getState(channelId: string, formatInstructions: string): ChannelState {
-	let state = channelStates.get(channelId);
+	const trunkKey = resolveTrunk(channelId);
+	let state = channelStates.get(trunkKey);
 	if (!state) {
-		const channelDir = join(workingDir, channelId);
+		const isTrunk = trunkKey === SLACK_TRUNK_KEY;
+		const channelDir = join(workingDir, trunkKey);
 		// send_message available on ALL channels for cross-channel messaging
 		const extraTools = [createSendMessageTool(adapters)];
+
+		// For trunk, also add set_working_channel tool
+		// We need a reference to state for the callback, so we create it in two steps
+		const stateRef: { current: ChannelState | null } = { current: null };
+		if (isTrunk) {
+			extraTools.push(createSetWorkingChannelTool(adapters, (newChannelId: string) => {
+				const slackAdapter = adapters.find((a) => a.name === "slack");
+				const channel = slackAdapter?.getChannel(newChannelId);
+				if (!channel) return undefined;
+				if (stateRef.current) {
+					stateRef.current.displayChannelId = newChannelId;
+				}
+				return channel.name;
+			}));
+		}
+
 		state = {
 			running: false,
-			runner: getOrCreateRunner(sandbox, channelId, channelDir, formatInstructions, parsedArgs.skillsDirs, extraTools),
+			runner: getOrCreateRunner(
+				sandbox,
+				trunkKey,
+				channelDir,
+				formatInstructions,
+				parsedArgs.skillsDirs,
+				extraTools,
+				isTrunk ? getChannelNameMap() : undefined,
+			),
 			store: new ChannelStore({ workingDir, botToken: process.env.MOM_SLACK_BOT_TOKEN || "" }),
 			stopRequested: false,
+			displayChannelId: channelId,
 		};
-		channelStates.set(channelId, state);
+		stateRef.current = state;
+		channelStates.set(trunkKey, state);
 	}
+	// Update display channel to wherever the latest message came from
+	state.displayChannelId = channelId;
 	return state;
 }
 
@@ -262,18 +331,20 @@ function getState(channelId: string, formatInstructions: string): ChannelState {
 
 const handler: MomHandler = {
 	isRunning(channelId: string): boolean {
-		const state = channelStates.get(channelId);
+		const trunkKey = resolveTrunk(channelId);
+		const state = channelStates.get(trunkKey);
 		return state?.running ?? false;
 	},
 
-	handleSteer(event: MomEvent, _adapter: PlatformAdapter): void {
-		const state = channelStates.get(event.channel);
+	handleSteer(event: MomEvent, adapter: PlatformAdapter): void {
+		const trunkKey = resolveTrunk(event.channel);
+		const state = channelStates.get(trunkKey);
 		if (!state?.running) {
-			log.logWarning(`[steer] handleSteer called but channel ${event.channel} not running`);
+			log.logWarning(`[steer] handleSteer called but trunk ${trunkKey} not running`);
 			return;
 		}
 
-		// Format the message the same way handleEvent does
+		// Format the message with timestamp
 		const now = new Date();
 		const pad = (n: number) => n.toString().padStart(2, "0");
 		const offset = -now.getTimezoneOffset();
@@ -281,14 +352,32 @@ const handler: MomHandler = {
 		const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
 		const offsetMins = pad(Math.abs(offset) % 60);
 		const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetMins}`;
-		const formattedMessage = `[${timestamp}] [${event.user || "unknown"}]: ${event.text}`;
 
-		log.logInfo(`[steer:${event.channel}] Steering message into active run: ${event.text.substring(0, 50)}`);
+		// Resolve user name from adapter metadata
+		const user = adapter.getUser(event.user);
+		const userName = user?.userName || event.user || "unknown";
+
+		// Tag with source channel for trunk awareness
+		const isCrossChannel = isSlackChannel(event.channel) && event.channel !== state.displayChannelId;
+		let formattedMessage: string;
+
+		if (isCrossChannel) {
+			const channelName = adapter.getChannel(event.channel)?.name || event.channel;
+			formattedMessage = `[${timestamp}] [#${channelName} | ${event.channel}] [${userName}]: ${event.text}`;
+
+			// Add harness proposal for attention shift
+			formattedMessage += `\n\n---\n[HARNESS] A message just arrived from #${channelName} (${event.channel}) while you were attending to #${adapter.getChannel(state.displayChannelId)?.name || state.displayChannelId}. You can:\n- Respond naturally here (your output goes to #${adapter.getChannel(state.displayChannelId)?.name || state.displayChannelId})\n- Use send_message to acknowledge them on #${channelName}\n- Use set_working_channel to shift your attention to #${channelName}\nDecide based on urgency and context.`;
+		} else {
+			formattedMessage = `[${timestamp}] [${userName}]: ${event.text}`;
+		}
+
+		log.logInfo(`[steer:${event.channel}→${trunkKey}] Steering message into active run: ${event.text.substring(0, 50)}`);
 		state.runner.steer(formattedMessage);
 	},
 
 	async handleStop(channelId: string, platform: PlatformAdapter): Promise<void> {
-		const state = channelStates.get(channelId);
+		const trunkKey = resolveTrunk(channelId);
+		const state = channelStates.get(trunkKey);
 		if (state?.running) {
 			state.stopRequested = true;
 			state.runner.abort();
@@ -309,14 +398,22 @@ const handler: MomHandler = {
 
 		const state = getState(event.channel, platform.formatInstructions);
 
+		// For trunk channels, tag the event text with source channel info
+		if (isSlackChannel(event.channel) && resolveTrunk(event.channel) === SLACK_TRUNK_KEY) {
+			const channelName = platform.getChannel(event.channel)?.name || event.channel;
+			// Store original text, tag with channel for trunk context
+			event = { ...event, text: event.text, channel: event.channel };
+			// The runner will pick up the display channel from state and tag the message
+		}
+
 		// Start run
 		state.running = true;
 		state.stopRequested = false;
 
-		log.logInfo(`[${platform.name}:${event.channel}] Starting run: ${event.text.substring(0, 50)}`);
+		log.logInfo(`[${platform.name}:${event.channel}] Starting run (trunk: ${resolveTrunk(event.channel)}): ${event.text.substring(0, 50)}`);
 
 		try {
-			// Create context from adapter
+			// Create context from adapter — targets the DISPLAY channel (real Slack channel)
 			const ctx = platform.createContext(event, state.store, isEvent);
 
 			// Run the agent
