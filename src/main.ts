@@ -16,7 +16,7 @@ import { Gateway } from "./gateway.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
-import { createSendMessageTool } from "./tools/send-message.js";
+import { createPingTool } from "./tools/ping.js";
 import { createSetWorkingChannelTool } from "./tools/set-working-channel.js";
 
 // ============================================================================
@@ -287,7 +287,7 @@ function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstruc
 	if (!awareness) {
 		const awarenessDir = join(workingDir, AWARENESS_DIR);
 		const extraTools = [
-			createSendMessageTool(adapters),
+			createPingTool(adapters),
 			createSetWorkingChannelTool(adapters, (newChannelId: string) => {
 				for (const a of adapters) {
 					const channel = a.getChannel(newChannelId);
@@ -361,8 +361,8 @@ const handler: MomHandler = {
 			const currentLabel = getChannelDisplayName(awareness.displayChannelId, adapters);
 			formattedMessage = `[${timestamp}] [${channelLabel}] [${userName}]: ${event.text}`;
 
-			// Add harness proposal for attention shift
-			formattedMessage += `\n\n---\n[HARNESS] A message just arrived from ${channelLabel} while you were attending to ${currentLabel}. You can:\n- Respond naturally here (your output goes to ${currentLabel})\n- Use send_message to acknowledge them on ${channelLabel}\n- Use set_working_channel to shift your attention there\nDecide based on urgency and context.`;
+			// Directive steering prompt — always ping, shift on urgency
+			formattedMessage += `\n\n---\n[HARNESS] A message arrived from ${channelLabel} while you are attending to ${currentLabel}.\n\nREQUIRED: Use the \`ping\` tool to acknowledge the sender on ${channelLabel} immediately. A short "Got it, working on something — one moment" is fine. Never leave a cross-channel message unacknowledged.\n\nIf the message is urgent or more important than your current task, also call \`set_working_channel\` to shift your attention to ${channelLabel} and abandon your current task — you can resume it later.`;
 		} else {
 			formattedMessage = `[${timestamp}] [${channelLabel}] [${userName}]: ${event.text}`;
 		}

@@ -1,5 +1,5 @@
 /**
- * Cross-channel send_message tool.
+ * Cross-channel ping tool.
  *
  * Lets the agent send a message to any connected channel (Telegram, Slack, Email)
  * regardless of which channel the current conversation is on.
@@ -34,11 +34,11 @@ function resolveAdapter(channel: string, adapters: PlatformAdapter[]): PlatformA
 }
 
 /**
- * Create the send_message tool for cross-channel messaging.
+ * Create the ping tool for cross-channel messaging.
  *
  * @param adapters - All platform adapters available for routing
  */
-export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<any> {
+export function createPingTool(adapters: PlatformAdapter[]): AgentTool<any> {
 	const schema = Type.Object({
 		label: Type.String({ description: "Brief description of what you're sending (shown in logs)" }),
 		channel: Type.String({ description: "Channel ID to send to (e.g., Telegram chat ID, Slack channel ID)" }),
@@ -47,13 +47,16 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 	});
 
 	return {
-		name: "send_message",
-		label: "send_message",
+		name: "ping",
+		label: "ping",
 		description:
-			"Send a message to a specific channel. Use this to reach people on Telegram, Slack, or Email. " +
+			"Ping a message to a different channel. Use this to reach people on Telegram, Slack, or Email " +
+			"when you are currently attending to a different channel. " +
 			"The channel ID determines which platform the message goes to: " +
 			"numeric IDs → Telegram, C/D/G-prefixed → Slack, email-{address} → Email. " +
-			"For email, you can include file attachments (e.g., PDFs, images).",
+			"For email, you can include file attachments (e.g., PDFs, images). " +
+			"IMPORTANT: You MUST ping whenever a message arrives from another channel while you are working. " +
+			"Never leave a cross-channel message unacknowledged.",
 		parameters: schema,
 		execute: async (
 			_toolCallId: string,
@@ -83,17 +86,17 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 				adapter.logBotResponse(channel, text, ts);
 
 				const attInfo = attachmentObjects?.length ? ` with ${attachmentObjects.length} attachment(s)` : "";
-				log.logInfo(`[send_message] Sent to ${adapter.name}:${channel}${attInfo}: ${text.substring(0, 80)}`);
+				log.logInfo(`[ping] Sent to ${adapter.name}:${channel}${attInfo}: ${text.substring(0, 80)}`);
 
 				return {
-					content: [{ type: "text" as const, text: `Message sent to ${adapter.name} channel ${channel}${attInfo} (ts=${ts})` }],
+					content: [{ type: "text" as const, text: `Pinged ${adapter.name} channel ${channel}${attInfo} (ts=${ts})` }],
 					details: undefined,
 				};
 			} catch (err) {
 				const errMsg = err instanceof Error ? err.message : String(err);
-				log.logWarning(`[send_message] Failed to send to ${adapter.name}:${channel}`, errMsg);
+				log.logWarning(`[ping] Failed to send to ${adapter.name}:${channel}`, errMsg);
 				return {
-					content: [{ type: "text" as const, text: `Failed to send: ${errMsg}` }],
+					content: [{ type: "text" as const, text: `Failed to ping: ${errMsg}` }],
 					details: undefined,
 				};
 			}

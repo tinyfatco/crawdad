@@ -7,6 +7,7 @@ import { createReadTool } from "./read.js";
 import { createWriteTool } from "./write.js";
 
 export { setUploadFunction } from "./attach.js";
+export { createPingTool } from "./ping.js";
 
 export function createMomTools(executor: Executor): AgentTool<any>[] {
 	return [

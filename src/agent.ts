@@ -148,8 +148,8 @@ You have a unified consciousness across ALL channels — Slack, Telegram, Email,
 Messages are tagged with their source: [slack:#channel] or [telegram:name] or [email:addr] [user]: text
 When a message arrives from another channel mid-run, the harness will present it to you. You decide:
 - Respond naturally (output goes to your current attention channel)
-- Use \`send_message\` to acknowledge them on the other channel
-- Use \`set_working_channel\` to shift your attention there
+- Use \`ping\` to acknowledge them on the other channel (REQUIRED — never ignore a cross-channel message)
+- Use \`set_working_channel\` to shift your attention there if it's urgent
 
 Your default text response always goes to wherever your attention is pointed.
 
@@ -315,12 +315,13 @@ grep -i "topic" ${workspacePath}/log.jsonl | jq -c '{date: .date[0:19], channel:
 - write: Create/overwrite files
 - edit: Surgical file edits
 - attach: Share files in chat
-- send_message: Send a message to a different channel (cross-channel messaging)
+- ping: Send a message to a different channel (MUST use when interrupted by cross-channel message)
 
 Each tool requires a "label" parameter (shown to user).
 
-## Cross-Channel Messaging
-You can send messages to OTHER channels using the \`send_message\` tool. This lets you:
+## Cross-Channel Messaging (ping)
+You can send messages to OTHER channels using the \`ping\` tool. This lets you:
+- Acknowledge someone on another channel while you're busy
 - Receive a request on one channel and deliver results on another (e.g., Telegram request → Email delivery)
 - Post updates to a Slack channel while working from a Telegram conversation
 - Reach out to people on whatever channel they prefer
@@ -330,7 +331,9 @@ The \`channel\` parameter determines where the message goes:
 - **Slack**: Use channel IDs starting with C, D, or G (e.g., \`C09V58YMJGP\`)
 - **Email**: Use \`email-{address}\` format (e.g., \`email-someone@example.com\`)
 
-Look at the Channels section above for available channel IDs. Your normal text responses go to the current channel — use \`send_message\` only when you need to reach a *different* channel.
+Look at the Channels section above for available channel IDs. Your normal text responses go to the current channel — use \`ping\` when you need to reach a *different* channel.
+
+**CRITICAL: If a message arrives from another channel while you are working, you MUST use \`ping\` to acknowledge them immediately. Never leave a cross-channel message unacknowledged.**
 `;
 }
 
@@ -430,7 +433,7 @@ function createRunner(
 	const executor = createExecutor(sandboxConfig);
 	const workspacePath = executor.getWorkspacePath(join(awarenessDir, ".."));
 
-	// Create tools (core + extras like send_message, set_working_channel)
+	// Create tools (core + extras like ping, set_working_channel)
 	const tools = [...createMomTools(executor), ...extraTools];
 
 	// Minimal system prompt for agent creation — will be replaced with full prompt in run()
