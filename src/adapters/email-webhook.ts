@@ -136,9 +136,11 @@ Keep responses concise and professional. The user will receive one email with yo
 		this.pendingPayloads.set(channelId, payload);
 
 		// Log the inbound message
-		this.logToFile(channelId, {
+		this.logToFile({
 			date: new Date().toISOString(),
 			ts,
+			channel: `email:${payload.from}`,
+			channelId,
 			user: payload.from,
 			userName: payload.from.split("@")[0],
 			text: event.text,
@@ -178,11 +180,11 @@ Keep responses concise and professional. The user will receive one email with yo
 		return parts.join("\n\n");
 	}
 
-	private saveAttachments(payload: EmailPayload, channelId: string): Map<string, string> {
+	private saveAttachments(payload: EmailPayload, _channelId: string): Map<string, string> {
 		const saved = new Map<string, string>();
 		if (!payload.attachments || payload.attachments.length === 0) return saved;
 
-		const dir = join(this.workingDir, channelId, "attachments");
+		const dir = join(this.workingDir, "attachments");
 		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
 		for (const att of payload.attachments) {
@@ -285,16 +287,16 @@ Keep responses concise and professional. The user will receive one email with yo
 	// Logging
 	// ==========================================================================
 
-	logToFile(channel: string, entry: object): void {
-		const dir = join(this.workingDir, channel);
-		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-		appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+	logToFile(entry: object): void {
+		appendFileSync(join(this.workingDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
 	}
 
 	logBotResponse(channel: string, text: string, ts: string): void {
-		this.logToFile(channel, {
+		this.logToFile({
 			date: new Date().toISOString(),
 			ts,
+			channel: `email:${channel.replace("email-", "")}`,
+			channelId: channel,
 			user: "bot",
 			text,
 			attachments: [],

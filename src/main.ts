@@ -2,7 +2,6 @@
 
 import { join, resolve } from "path";
 import { EmailWebhookAdapter } from "./adapters/email-webhook.js";
-import { HeartbeatAdapter } from "./adapters/heartbeat.js";
 import { SlackSocketAdapter } from "./adapters/slack-socket.js";
 import { SlackWebhookAdapter } from "./adapters/slack-webhook.js";
 import { TelegramPollingAdapter } from "./adapters/telegram-polling.js";
@@ -21,45 +20,29 @@ import { createSendMessageTool } from "./tools/send-message.js";
 import { createSetWorkingChannelTool } from "./tools/set-working-channel.js";
 
 // ============================================================================
-// Trunk resolution — all external channels share one runner/context
+// Channel labeling — human-readable names for messages in the awareness context
 // ============================================================================
-
-const TRUNK_KEY = "_trunk";
-const HEARTBEAT_KEY = "_heartbeat";
-
-/** Returns true if the channelId looks like a Slack channel (C/D/G prefix) */
-function isSlackChannel(channelId: string): boolean {
-	return /^[CDG]/.test(channelId);
-}
-
-/**
- * Resolve a channelId to its trunk key.
- * All external channels (Slack, Telegram, Email, Web) map to the unified trunk.
- * Only _heartbeat stays separate (internal meditation state).
- */
-function resolveTrunk(channelId: string): string {
-	return channelId === HEARTBEAT_KEY ? HEARTBEAT_KEY : TRUNK_KEY;
-}
 
 /**
  * Get a human-readable label for a channel, including adapter type.
- * Used for tagging messages in the trunk context.
+ * Used for tagging messages in the unified awareness context.
  */
-function getChannelLabel(channelId: string, adapter: PlatformAdapter): string {
-	if (isSlackChannel(channelId)) {
-		const name = adapter.getChannel(channelId)?.name || channelId;
-		return `#${name} | ${channelId}`;
+function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): string {
+	for (const adapter of adaptersList) {
+		const ch = adapter.getChannel(channelId);
+		if (ch) {
+			if (/^[CDG]/.test(channelId)) return `slack:#${ch.name}`;
+			if (/^-?\d+$/.test(channelId)) return `telegram:${ch.name}`;
+			if (channelId.startsWith("email-")) return `email:${channelId.replace("email-", "")}`;
+			if (channelId.startsWith("web-")) return `web:${ch.name}`;
+			return ch.name;
+		}
 	}
-	if (/^-?\d+$/.test(channelId)) {
-		const name = adapter.getChannel(channelId)?.name || channelId;
-		return `Telegram:${name}`;
-	}
-	if (channelId.startsWith("email-")) {
-		return `Email:${channelId.replace("email-", "")}`;
-	}
-	if (channelId.startsWith("web-")) {
-		return `Web:${channelId}`;
-	}
+	// Fallback for unknown channels
+	if (/^[CDG]/.test(channelId)) return `slack:${channelId}`;
+	if (/^-?\d+$/.test(channelId)) return `telegram:${channelId}`;
+	if (channelId.startsWith("email-")) return `email:${channelId.replace("email-", "")}`;
+	if (channelId.startsWith("web-")) return `web:${channelId}`;
 	return channelId;
 }
 
@@ -70,7 +53,7 @@ function getChannelDisplayName(channelId: string, adaptersList: PlatformAdapter[
 	for (const adapter of adaptersList) {
 		const ch = adapter.getChannel(channelId);
 		if (ch) {
-			if (isSlackChannel(channelId)) return `#${ch.name}`;
+			if (/^[CDG]/.test(channelId)) return `#${ch.name}`;
 			return `${adapter.name}:${ch.name}`;
 		}
 	}
@@ -280,98 +263,65 @@ function createAdapter(name: string): AdapterWithHandler {
 
 const adapters: AdapterWithHandler[] = parsedArgs.adapters.map(createAdapter);
 
-// Create heartbeat adapter — lives alongside other adapters but is purely internal
-const heartbeatAdapter = new HeartbeatAdapter({ workingDir });
-
 // ============================================================================
-// State (per channel)
+// Awareness — single unified state for the agent
 // ============================================================================
 
-interface ChannelState {
+const AWARENESS_DIR = "awareness";
+
+interface Awareness {
 	running: boolean;
 	runner: AgentRunner;
 	store: ChannelStore;
 	stopRequested: boolean;
 	stopMessageTs?: string;
-	/** The display channel where output is currently routed (real channel ID, not trunk key) */
+	/** The display channel where output is currently routed (real channel ID) */
 	displayChannelId: string;
+	/** The adapter currently handling display output */
+	displayAdapter: PlatformAdapter;
 }
 
-const channelStates = new Map<string, ChannelState>();
+let awareness: Awareness | null = null;
 
-/**
- * Get the channel name resolver for tagging messages with source channel.
- * Reads from ALL adapters — Slack, Telegram, Email, Web.
- */
-function getChannelNameMap(): Map<string, string> {
-	const map = new Map<string, string>();
-	for (const adapter of adapters) {
-		for (const ch of adapter.getAllChannels()) {
-			if (isSlackChannel(ch.id)) {
-				map.set(ch.id, `#${ch.name}`);
-			} else if (/^-?\d+$/.test(ch.id)) {
-				map.set(ch.id, `Telegram:${ch.name}`);
-			} else if (ch.id.startsWith("email-")) {
-				map.set(ch.id, `Email:${ch.id.replace("email-", "")}`);
-			} else if (ch.id.startsWith("web-")) {
-				map.set(ch.id, `Web:${ch.name}`);
-			} else {
-				map.set(ch.id, ch.name);
-			}
-		}
-	}
-	return map;
-}
-
-function getState(channelId: string, formatInstructions: string): ChannelState {
-	const trunkKey = resolveTrunk(channelId);
-	let state = channelStates.get(trunkKey);
-	if (!state) {
-		const isTrunk = trunkKey === TRUNK_KEY;
-		const channelDir = join(workingDir, trunkKey);
-		// send_message available on ALL channels for cross-channel messaging
-		const extraTools = [createSendMessageTool(adapters)];
-
-		// For trunk, also add set_working_channel tool
-		// We need a reference to state for the callback, so we create it in two steps
-		const stateRef: { current: ChannelState | null } = { current: null };
-		if (isTrunk) {
-			extraTools.push(createSetWorkingChannelTool(adapters, (newChannelId: string) => {
-				// Look across all adapters for the channel
-				for (const adapter of adapters) {
-					const channel = adapter.getChannel(newChannelId);
+function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstructions: string): Awareness {
+	if (!awareness) {
+		const awarenessDir = join(workingDir, AWARENESS_DIR);
+		const extraTools = [
+			createSendMessageTool(adapters),
+			createSetWorkingChannelTool(adapters, (newChannelId: string) => {
+				for (const a of adapters) {
+					const channel = a.getChannel(newChannelId);
 					if (channel) {
-						if (stateRef.current) {
-							stateRef.current.displayChannelId = newChannelId;
+						if (awareness) {
+							awareness.displayChannelId = newChannelId;
+							awareness.displayAdapter = a;
 						}
 						return getChannelDisplayName(newChannelId, adapters);
 					}
 				}
 				return undefined;
-			}));
-		}
+			}),
+		];
 
-		state = {
+		awareness = {
 			running: false,
 			runner: getOrCreateRunner(
 				sandbox,
-				trunkKey,
-				channelDir,
+				awarenessDir,
 				formatInstructions,
 				parsedArgs.skillsDirs,
 				extraTools,
-				isTrunk ? getChannelNameMap() : undefined,
 			),
 			store: new ChannelStore({ workingDir, botToken: process.env.MOM_SLACK_BOT_TOKEN || "" }),
 			stopRequested: false,
 			displayChannelId: channelId,
+			displayAdapter: adapter,
 		};
-		stateRef.current = state;
-		channelStates.set(trunkKey, state);
 	}
 	// Update display channel to wherever the latest message came from
-	state.displayChannelId = channelId;
-	return state;
+	awareness.displayChannelId = channelId;
+	awareness.displayAdapter = adapter;
+	return awareness;
 }
 
 // ============================================================================
@@ -379,17 +329,13 @@ function getState(channelId: string, formatInstructions: string): ChannelState {
 // ============================================================================
 
 const handler: MomHandler = {
-	isRunning(channelId: string): boolean {
-		const trunkKey = resolveTrunk(channelId);
-		const state = channelStates.get(trunkKey);
-		return state?.running ?? false;
+	isRunning(_channelId: string): boolean {
+		return awareness?.running ?? false;
 	},
 
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): void {
-		const trunkKey = resolveTrunk(event.channel);
-		const state = channelStates.get(trunkKey);
-		if (!state?.running) {
-			log.logWarning(`[steer] handleSteer called but trunk ${trunkKey} not running`);
+		if (!awareness?.running) {
+			log.logWarning(`[steer] handleSteer called but awareness not running`);
 			return;
 		}
 
@@ -406,33 +352,31 @@ const handler: MomHandler = {
 		const user = adapter.getUser(event.user);
 		const userName = user?.userName || event.user || "unknown";
 
-		// Tag with source channel for trunk awareness
-		const isCrossChannel = event.channel !== state.displayChannelId;
+		// Tag with source channel for awareness
+		const isCrossChannel = event.channel !== awareness.displayChannelId;
+		const channelLabel = getChannelLabel(event.channel, adapters);
 		let formattedMessage: string;
 
 		if (isCrossChannel) {
-			const channelLabel = getChannelLabel(event.channel, adapter);
-			const currentLabel = getChannelDisplayName(state.displayChannelId, adapters);
+			const currentLabel = getChannelDisplayName(awareness.displayChannelId, adapters);
 			formattedMessage = `[${timestamp}] [${channelLabel}] [${userName}]: ${event.text}`;
 
 			// Add harness proposal for attention shift
 			formattedMessage += `\n\n---\n[HARNESS] A message just arrived from ${channelLabel} while you were attending to ${currentLabel}. You can:\n- Respond naturally here (your output goes to ${currentLabel})\n- Use send_message to acknowledge them on ${channelLabel}\n- Use set_working_channel to shift your attention there\nDecide based on urgency and context.`;
 		} else {
-			formattedMessage = `[${timestamp}] [${userName}]: ${event.text}`;
+			formattedMessage = `[${timestamp}] [${channelLabel}] [${userName}]: ${event.text}`;
 		}
 
-		log.logInfo(`[steer:${event.channel}→${trunkKey}] Steering message into active run: ${event.text.substring(0, 50)}`);
-		state.runner.steer(formattedMessage);
+		log.logInfo(`[steer:${event.channel}] Steering message into active run: ${event.text.substring(0, 50)}`);
+		awareness.runner.steer(formattedMessage);
 	},
 
 	async handleStop(channelId: string, platform: PlatformAdapter): Promise<void> {
-		const trunkKey = resolveTrunk(channelId);
-		const state = channelStates.get(trunkKey);
-		if (state?.running) {
-			state.stopRequested = true;
-			state.runner.abort();
+		if (awareness?.running) {
+			awareness.stopRequested = true;
+			awareness.runner.abort();
 			const ts = await platform.postMessage(channelId, "_Stopping..._");
-			state.stopMessageTs = ts;
+			awareness.stopMessageTs = ts;
 		} else {
 			await platform.postMessage(channelId, "_Nothing running_");
 		}
@@ -446,19 +390,17 @@ const handler: MomHandler = {
 			if (handled) return;
 		}
 
-		const state = getState(event.channel, platform.formatInstructions);
-
-		// For trunk channels, the runner tags messages with source channel in the context
-		// (no event mutation needed — tagging happens in agent.ts user message construction)
+		const state = getAwareness(event.channel, platform, platform.formatInstructions);
 
 		// Start run
 		state.running = true;
 		state.stopRequested = false;
 
-		log.logInfo(`[${platform.name}:${event.channel}] Starting run (trunk: ${resolveTrunk(event.channel)}): ${event.text.substring(0, 50)}`);
+		const channelLabel = getChannelLabel(event.channel, adapters);
+		log.logInfo(`[${platform.name}:${event.channel}] Starting run (${channelLabel}): ${event.text.substring(0, 50)}`);
 
 		try {
-			// Create context from adapter — targets the DISPLAY channel (real Slack channel)
+			// Create context from adapter — targets the DISPLAY channel (real channel ID)
 			const ctx = platform.createContext(event, state.store, isEvent);
 
 			// Run the agent
@@ -500,13 +442,6 @@ for (const adapter of adapters) {
 	adapter.setHandler(handler);
 }
 
-// Wire up heartbeat adapter — give it handler + references to all channel adapters
-heartbeatAdapter.setHandler(handler);
-heartbeatAdapter.setOtherAdapters(adapters);
-
-// All adapters including heartbeat — EventsWatcher iterates this to route events
-const allAdapters: PlatformAdapter[] = [...adapters, heartbeatAdapter];
-
 // Route map: webhook adapters register their dispatch path with the gateway
 const DISPATCH_PATHS: Record<string, string> = {
 	"slack:webhook": "/slack/events",
@@ -519,13 +454,9 @@ const DISPATCH_PATHS: Record<string, string> = {
 // detect the port is up. Routes return 503 until their adapter is ready.
 const gateway = new Gateway();
 
-// Status endpoint — reports which channels are currently running.
-// Used by the orchestrator to wait for agent idle before re-syncing schedules.
+// Status endpoint — reports whether the agent is currently running.
 gateway.registerGet("/status", async (_req, res) => {
-	const running: string[] = [];
-	for (const [channelId, state] of channelStates) {
-		if (state.running) running.push(channelId);
-	}
+	const running = awareness?.running ? [AWARENESS_DIR] : [];
 	res.writeHead(200, { "Content-Type": "application/json" });
 	res.end(JSON.stringify({ running, idle: running.length === 0 }));
 });
@@ -576,8 +507,7 @@ await Promise.all(adapters.map(async (adapter, i) => {
 log.logInfo(`[perf] all adapters started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
 // Start events watcher AFTER adapters (may block on slow FS)
-// Uses allAdapters so heartbeat events (_heartbeat channelId) get routed correctly
-const eventsWatcher = createEventsWatcher(workingDir, allAdapters);
+const eventsWatcher = createEventsWatcher(workingDir, adapters);
 eventsWatcher.start();
 log.logInfo(`[perf] events watcher started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 log.logInfo(`[perf] TOTAL STARTUP: ${(performance.now() - T_BOOT).toFixed(0)}ms`);

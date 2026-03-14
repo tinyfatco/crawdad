@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync } from "fs";
+import { appendFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import { join } from "path";
 import * as log from "../log.js";
@@ -145,9 +145,11 @@ Keep responses concise and helpful.`;
 			text: payload.message,
 		};
 
-		this.logToFile(channelId, {
+		this.logToFile({
 			date: new Date().toISOString(),
 			ts,
+			channel: `web:${channelId}`,
+			channelId,
 			user: "web-user",
 			userName: "web-user",
 			text: event.text,
@@ -201,16 +203,16 @@ Keep responses concise and helpful.`;
 	// Logging
 	// ==========================================================================
 
-	logToFile(channel: string, entry: object): void {
-		const dir = join(this.workingDir, channel);
-		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-		appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+	logToFile(entry: object): void {
+		appendFileSync(join(this.workingDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
 	}
 
 	logBotResponse(channel: string, text: string, ts: string): void {
-		this.logToFile(channel, {
+		this.logToFile({
 			date: new Date().toISOString(),
 			ts,
+			channel: `web:${channel}`,
+			channelId: channel,
 			user: "bot",
 			text,
 			attachments: [],

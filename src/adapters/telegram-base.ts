@@ -131,9 +131,12 @@ When mentioning users, use @username format.`;
 		};
 
 		// Log user message
-		this.logToFile(chatId, {
+		const chatName = this.channels.get(chatId)?.name || chatId;
+		this.logToFile({
 			date: new Date(msg.date * 1000).toISOString(),
 			ts: String(msg.date),
+			channel: `telegram:${chatName}`,
+			channelId: chatId,
 			user: userId,
 			userName,
 			displayName,
@@ -186,7 +189,7 @@ When mentioning users, use @username format.`;
 		return null;
 	}
 
-	private async downloadTelegramFile(chatId: string, fileId: string, fileName: string, timestamp: string): Promise<string> {
+	private async downloadTelegramFile(_chatId: string, fileId: string, fileName: string, timestamp: string): Promise<string> {
 		const fileUrl = await this.bot.getFileLink(fileId);
 
 		const response = await fetch(fileUrl);
@@ -196,14 +199,14 @@ When mentioning users, use @username format.`;
 
 		const buffer = Buffer.from(await response.arrayBuffer());
 
-		// Save to channel attachments dir
+		// Save to shared attachments dir
 		const ts = Math.floor(parseFloat(timestamp) * 1000) || Date.now();
 		const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
 		const localFileName = `${ts}_${sanitized}`;
-		const relativePath = `${chatId}/attachments/${localFileName}`;
+		const relativePath = `attachments/${localFileName}`;
 		const fullPath = join(this.workingDir, relativePath);
 
-		const dir = join(this.workingDir, chatId, "attachments");
+		const dir = join(this.workingDir, "attachments");
 		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
 		writeFileSync(fullPath, buffer);
@@ -259,16 +262,17 @@ When mentioning users, use @username format.`;
 		await this.bot.sendDocument(Number(channel), fileContent, {}, { filename: fileName });
 	}
 
-	logToFile(channel: string, entry: object): void {
-		const dir = join(this.workingDir, channel);
-		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-		appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+	logToFile(entry: object): void {
+		appendFileSync(join(this.workingDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
 	}
 
 	logBotResponse(channel: string, text: string, ts: string): void {
-		this.logToFile(channel, {
+		const ch = this.channels.get(channel);
+		this.logToFile({
 			date: new Date().toISOString(),
 			ts,
+			channel: ch ? `telegram:${ch.name}` : `telegram:${channel}`,
+			channelId: channel,
 			user: "bot",
 			text,
 			attachments: [],

@@ -1,5 +1,5 @@
 import { WebClient } from "@slack/web-api";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { appendFileSync, existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
@@ -174,16 +174,17 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		});
 	}
 
-	logToFile(channel: string, entry: object): void {
-		const dir = join(this.workingDir, channel);
-		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-		appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+	logToFile(entry: object): void {
+		appendFileSync(join(this.workingDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
 	}
 
 	logBotResponse(channel: string, text: string, ts: string): void {
-		this.logToFile(channel, {
+		const ch = this.channels.get(channel);
+		this.logToFile({
 			date: new Date().toISOString(),
 			ts,
+			channel: ch ? `slack:#${ch.name}` : `slack:${channel}`,
+			channelId: channel,
 			user: "bot",
 			text,
 			attachments: [],
@@ -281,9 +282,12 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	protected logUserMessage(event: MomEvent): Attachment[] {
 		const user = this.users.get(event.user);
 		const attachments = event.files ? this.store.processAttachments(event.channel, event.files, event.ts) : [];
-		this.logToFile(event.channel, {
+		const ch = this.channels.get(event.channel);
+		this.logToFile({
 			date: new Date(parseFloat(event.ts) * 1000).toISOString(),
 			ts: event.ts,
+			channel: ch ? `slack:#${ch.name}` : `slack:${event.channel}`,
+			channelId: event.channel,
 			user: event.user,
 			userName: user?.userName,
 			displayName: user?.displayName,
@@ -299,7 +303,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	// ==========================================================================
 
 	private getExistingTimestamps(channelId: string): Set<string> {
-		const logPath = join(this.workingDir, channelId, "log.jsonl");
+		const logPath = join(this.workingDir, "log.jsonl");
 		const timestamps = new Set<string>();
 		if (!existsSync(logPath)) return timestamps;
 
@@ -308,7 +312,8 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		for (const line of lines) {
 			try {
 				const entry = JSON.parse(line);
-				if (entry.ts) timestamps.add(entry.ts);
+				// Only consider entries for this channel
+				if (entry.ts && entry.channelId === channelId) timestamps.add(entry.ts);
 			} catch {}
 		}
 		return timestamps;
@@ -369,9 +374,12 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			const text = (msg.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim();
 			const attachments = msg.files ? this.store.processAttachments(channelId, msg.files, msg.ts!) : [];
 
-			this.logToFile(channelId, {
+			const ch = this.channels.get(channelId);
+			this.logToFile({
 				date: new Date(parseFloat(msg.ts!) * 1000).toISOString(),
 				ts: msg.ts!,
+				channel: ch ? `slack:#${ch.name}` : `slack:${channelId}`,
+				channelId,
 				user: isMomMessage ? "bot" : msg.user!,
 				userName: isMomMessage ? undefined : user?.userName,
 				displayName: isMomMessage ? undefined : user?.displayName,
@@ -387,13 +395,8 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	private async backfillAllChannels(): Promise<void> {
 		const startTime = Date.now();
 
-		const channelsToBackfill: Array<[string, SlackChannel]> = [];
-		for (const [channelId, channel] of this.channels) {
-			const logPath = join(this.workingDir, channelId, "log.jsonl");
-			if (existsSync(logPath)) {
-				channelsToBackfill.push([channelId, channel]);
-			}
-		}
+		// Backfill all channels we're a member of
+		const channelsToBackfill: Array<[string, SlackChannel]> = Array.from(this.channels.entries());
 
 		log.logBackfillStart(channelsToBackfill.length);
 

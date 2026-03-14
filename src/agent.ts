@@ -16,7 +16,7 @@ import { existsSync, readFileSync } from "fs";
 import { mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import type { ChannelInfo, MomContext, UserInfo } from "./adapters/types.js";
-import { MomSettingsManager, syncLogToSessionManager } from "./context.js";
+import { MomSettingsManager } from "./context.js";
 import * as log from "./log.js";
 import { resolveModel, resolveApiKey, registerFireworksProvider } from "./model-config.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
@@ -55,52 +55,25 @@ function getImageMimeType(filename: string): string | undefined {
 	return IMAGE_MIME_TYPES[filename.toLowerCase().split(".").pop() || ""];
 }
 
-function getMemory(channelDir: string, isTrunk = false): string {
-	const parts: string[] = [];
-
-	// Read workspace-level memory (shared across all channels)
-	const workspaceDir = isTrunk ? join(channelDir, "..") : join(channelDir, "..");
-	const workspaceMemoryPath = join(workspaceDir, "MEMORY.md");
-	if (existsSync(workspaceMemoryPath)) {
+function getMemory(workspaceDir: string): string {
+	const memoryPath = join(workspaceDir, "MEMORY.md");
+	if (existsSync(memoryPath)) {
 		try {
-			const content = readFileSync(workspaceMemoryPath, "utf-8").trim();
+			const content = readFileSync(memoryPath, "utf-8").trim();
 			if (content) {
-				parts.push(`### Workspace Memory\n${content}`);
+				return content;
 			}
 		} catch (error) {
-			log.logWarning("Failed to read workspace memory", `${workspaceMemoryPath}: ${error}`);
+			log.logWarning("Failed to read memory", `${memoryPath}: ${error}`);
 		}
 	}
-
-	// For trunk mode, skip channel-specific memory (it fragments consciousness)
-	if (!isTrunk) {
-		const channelMemoryPath = join(channelDir, "MEMORY.md");
-		if (existsSync(channelMemoryPath)) {
-			try {
-				const content = readFileSync(channelMemoryPath, "utf-8").trim();
-				if (content) {
-					parts.push(`### Channel-Specific Memory\n${content}`);
-				}
-			} catch (error) {
-				log.logWarning("Failed to read channel memory", `${channelMemoryPath}: ${error}`);
-			}
-		}
-	}
-
-	if (parts.length === 0) {
-		return "(no working memory yet)";
-	}
-
-	return parts.join("\n\n");
+	return "(no working memory yet)";
 }
 
-function loadMomSkills(channelDir: string, workspacePath: string, extraSkillsDirs: string[] = []): Skill[] {
+function loadMomSkills(awarenessDir: string, workspacePath: string, extraSkillsDirs: string[] = []): Skill[] {
 	const skillMap = new Map<string, Skill>();
 
-	// channelDir is the host path (e.g., /Users/.../data/C0A34FL8PMH)
-	// hostWorkspacePath is the parent directory on host
-	// workspacePath is the container path (e.g., /workspace)
-	const hostWorkspacePath = join(channelDir, "..");
+	const hostWorkspacePath = join(awarenessDir, "..");
 
 	// Helper to translate host paths to container paths
 	const translatePath = (hostPath: string): string => {
@@ -113,7 +86,6 @@ function loadMomSkills(channelDir: string, workspacePath: string, extraSkillsDir
 	// Load extra skills dirs first (lowest priority — e.g. platform skills via --skills)
 	for (const dir of extraSkillsDirs) {
 		for (const skill of loadSkillsFromDir({ dir, source: "system" }).skills) {
-			// Extra skills dirs use absolute paths (not translated — they're on the image filesystem)
 			skillMap.set(skill.name, skill);
 		}
 	}
@@ -121,15 +93,6 @@ function loadMomSkills(channelDir: string, workspacePath: string, extraSkillsDir
 	// Load workspace-level skills (global) — overrides system skills on collision
 	const workspaceSkillsDir = join(hostWorkspacePath, "skills");
 	for (const skill of loadSkillsFromDir({ dir: workspaceSkillsDir, source: "workspace" }).skills) {
-		// Translate paths to container paths for system prompt
-		skill.filePath = translatePath(skill.filePath);
-		skill.baseDir = translatePath(skill.baseDir);
-		skillMap.set(skill.name, skill);
-	}
-
-	// Load channel-specific skills (override workspace skills on collision)
-	const channelSkillsDir = join(channelDir, "skills");
-	for (const skill of loadSkillsFromDir({ dir: channelSkillsDir, source: "channel" }).skills) {
 		skill.filePath = translatePath(skill.filePath);
 		skill.baseDir = translatePath(skill.baseDir);
 		skillMap.set(skill.name, skill);
@@ -140,17 +103,15 @@ function loadMomSkills(channelDir: string, workspacePath: string, extraSkillsDir
 
 function buildSystemPrompt(
 	workspacePath: string,
-	channelId: string,
 	memory: string,
 	sandboxConfig: SandboxConfig,
 	channels: ChannelInfo[],
 	users: UserInfo[],
 	skills: Skill[],
 	formatInstructions: string,
-	trunkInfo?: { displayChannelId: string; displayChannelName?: string },
+	displayChannelId: string,
+	displayChannelName?: string,
 ): string {
-	const isTrunk = channelId === "_trunk";
-	const channelPath = isTrunk ? `${workspacePath}/_trunk` : `${workspacePath}/${channelId}`;
 	const isDocker = sandboxConfig.type === "docker";
 
 	// Format channel mappings
@@ -170,54 +131,27 @@ function buildSystemPrompt(
 - Bash working directory: ${process.cwd()}
 - Be careful with system modifications`;
 
-	// Trunk-specific context section
-	const trunkContext = isTrunk && trunkInfo ? `
-## Attention Model (Context of Self)
-You have a unified consciousness across ALL channels — Slack, Telegram, Email, and Web. Every message from every channel enters your single context. You are always AWARE of everything, but you ATTEND to one channel at a time — that's where your visible output goes.
-
-**Currently attending:** ${trunkInfo.displayChannelName || trunkInfo.displayChannelId} (${trunkInfo.displayChannelId})
-
-Messages from other channels are tagged with their source: [#channel | ID] or [Telegram:name] or [Email:addr] [user]: text
-When a message arrives from another channel mid-run, the harness will present it to you. You decide:
-- Respond naturally (output goes to your current attention channel)
-- Use \`send_message\` to acknowledge them on the other channel
-- Use \`set_working_channel\` to shift your attention there
-
-Your default text response always goes to wherever your attention is pointed.` : "";
-
-	const workspaceLayout = isTrunk ? `## Workspace Layout
-${workspacePath}/
-├── MEMORY.md                    # Your memory (shared across all channels)
-├── settings.json                # Model & preferences (see below)
-├── skills/                      # Global CLI tools you create
-├── _trunk/                      # Unified context (all channels)
-│   ├── context.jsonl            # Your continuous context
-│   └── scratch/                 # Your working directory
-├── C.../                        # Per-channel logs (Slack, written by adapters)
-├── -12345.../                   # Per-channel logs (Telegram)
-├── email-.../                   # Per-channel logs (Email)
-│   └── log.jsonl                # Message history for that channel
-└── ...other channel dirs/` : `## Workspace Layout
-${workspacePath}/
-├── MEMORY.md                    # Global memory (all channels)
-├── settings.json                # Model & preferences (see below)
-├── skills/                      # Global CLI tools you create
-└── ${channelId}/                # This channel
-    ├── MEMORY.md                # Channel-specific memory
-    ├── log.jsonl                # Message history (no tool results)
-    ├── attachments/             # User-shared files
-    ├── scratch/                 # Your working directory
-    └── skills/                  # Channel-specific tools`;
-
 	return `You are mom, a chat bot assistant. Be concise. No emojis.
 
 ## Context
 - For current date/time, use: date
 - You have access to previous conversation context including tool results from prior turns.
-- For older history beyond your context, search log.jsonl (contains user messages and your final responses, but not tool results).
+- For older history beyond your context, search log.jsonl (contains all channel activity).
 
 ${formatInstructions}
-${trunkContext}
+
+## Attention Model (Unified Awareness)
+You have a unified consciousness across ALL channels — Slack, Telegram, Email, and Web. Every message from every channel enters your single awareness context. You are always AWARE of everything, but you ATTEND to one channel at a time — that's where your visible output goes.
+
+**Currently attending:** ${displayChannelName || displayChannelId} (${displayChannelId})
+
+Messages are tagged with their source: [slack:#channel] or [telegram:name] or [email:addr] [user]: text
+When a message arrives from another channel mid-run, the harness will present it to you. You decide:
+- Respond naturally (output goes to your current attention channel)
+- Use \`send_message\` to acknowledge them on the other channel
+- Use \`set_working_channel\` to shift your attention there
+
+Your default text response always goes to wherever your attention is pointed.
 
 ## Channels
 ${channelMappings}
@@ -228,7 +162,18 @@ ${userMappings}
 ## Environment
 ${envDescription}
 
-${workspaceLayout}
+## Workspace Layout
+${workspacePath}/
+├── awareness/                  # Your single consciousness
+│   ├── context.jsonl           # Your continuous context
+│   └── scratch/                # Your working directory
+├── log.jsonl                   # Unified activity log (all channels, grep target)
+├── MEMORY.md                   # Your persistent memory
+├── SYSTEM.md                   # Environment config log
+├── settings.json               # Model & preferences
+├── skills/                     # CLI tools you create
+├── events/                     # Scheduled wake events
+└── attachments/                # Files shared by users
 
 ## Model Selection
 You can switch which AI model you use. To change, write to \`${workspacePath}/settings.json\`:
@@ -248,7 +193,7 @@ If \`FAT_TOOLS_TOKEN\` is set, you have access to platform APIs for secrets pers
 You can create reusable CLI tools for recurring tasks (email, APIs, data processing, etc.).
 
 ### Creating Skills
-Store in \`${workspacePath}/skills/<name>/\` (global) or \`${channelPath}/skills/<name>/\` (channel-specific).
+Store in \`${workspacePath}/skills/<name>/\` (global).
 Each skill directory needs a \`SKILL.md\` with YAML frontmatter:
 
 \`\`\`markdown
@@ -275,17 +220,17 @@ You can schedule events that wake you up at specific times or when external thin
 
 **Immediate** - Triggers as soon as harness sees the file. Use in scripts/webhooks to signal external events.
 \`\`\`json
-{"type": "immediate", "channelId": "${channelId}", "text": "New GitHub issue opened"}
+{"type": "immediate", "channelId": "${displayChannelId}", "text": "New GitHub issue opened"}
 \`\`\`
 
 **One-shot** - Triggers once at a specific time. Use for reminders.
 \`\`\`json
-{"type": "one-shot", "channelId": "${channelId}", "text": "Remind Mario about dentist", "at": "2025-12-15T09:00:00+01:00"}
+{"type": "one-shot", "channelId": "${displayChannelId}", "text": "Remind Mario about dentist", "at": "2025-12-15T09:00:00+01:00"}
 \`\`\`
 
 **Periodic** - Triggers on a cron schedule. Use for recurring tasks.
 \`\`\`json
-{"type": "periodic", "channelId": "${channelId}", "text": "Check inbox and summarize", "schedule": "0 9 * * 1-5", "timezone": "${Intl.DateTimeFormat().resolvedOptions().timeZone}"}
+{"type": "periodic", "channelId": "${displayChannelId}", "text": "Check inbox and summarize", "schedule": "0 9 * * 1-5", "timezone": "${Intl.DateTimeFormat().resolvedOptions().timeZone}"}
 \`\`\`
 
 ### Cron Format
@@ -302,7 +247,7 @@ All \`at\` timestamps must include offset (e.g., \`+01:00\`). Periodic events us
 Use unique filenames to avoid overwriting existing events. Include a timestamp or random suffix:
 \`\`\`bash
 cat > ${workspacePath}/events/dentist-reminder-$(date +%s).json << 'EOF'
-{"type": "one-shot", "channelId": "${channelId}", "text": "Dentist tomorrow", "at": "2025-12-14T09:00:00+01:00"}
+{"type": "one-shot", "channelId": "${displayChannelId}", "text": "Dentist tomorrow", "at": "2025-12-14T09:00:00+01:00"}
 EOF
 \`\`\`
 Or check if file exists first before creating.
@@ -329,11 +274,8 @@ When writing programs that create immediate events (email watchers, webhook hand
 Maximum 5 events can be queued. Don't create excessive immediate or periodic events.
 
 ## Memory
-Write to MEMORY.md to persist context across conversations.${isTrunk ? `
-- Write to ${workspacePath}/MEMORY.md — this is your single unified memory.
-- Do NOT create channel-specific MEMORY.md files. Your consciousness is unified.` : `
-- Global (${workspacePath}/MEMORY.md): skills, preferences, project info
-- Channel (${channelPath}/MEMORY.md): channel-specific decisions, ongoing work`}
+Write to \`${workspacePath}/MEMORY.md\` — this is your single unified memory.
+Do NOT create channel-specific memory files. Your consciousness is unified.
 Update when you learn something important or when asked to remember something.
 
 ### Current Memory
@@ -349,19 +291,22 @@ Maintain ${workspacePath}/SYSTEM.md to log all environment modifications:
 Update this file whenever you modify the environment. On fresh container, read it first to restore your setup.
 
 ## Log Queries (for older history)
-Format: \`{"date":"...","ts":"...","user":"...","userName":"...","text":"...","isBot":false}\`
-The log contains user messages and your final responses (not tool calls/results).
+The unified log contains all channel activity in one file.
+Format: \`{"date":"...","ts":"...","channel":"...","channelId":"...","user":"...","userName":"...","text":"...","isBot":false}\`
 ${isDocker ? "Install jq: apk add jq" : ""}
 
 \`\`\`bash
-# Recent messages
-tail -30 log.jsonl | jq -c '{date: .date[0:19], user: (.userName // .user), text}'
+# Recent messages (all channels)
+tail -30 ${workspacePath}/log.jsonl | jq -c '{date: .date[0:19], channel: .channel, user: (.userName // .user), text}'
 
-# Search for specific topic
-grep -i "topic" log.jsonl | jq -c '{date: .date[0:19], user: (.userName // .user), text}'
+# Messages from a specific channel
+jq -c 'select(.channel | startswith("slack:"))' ${workspacePath}/log.jsonl | tail -20
 
 # Messages from specific user
-grep '"userName":"mario"' log.jsonl | tail -20 | jq -c '{date: .date[0:19], text}'
+jq -c 'select(.userName == "mario")' ${workspacePath}/log.jsonl | tail -20
+
+# Search for specific topic
+grep -i "topic" ${workspacePath}/log.jsonl | jq -c '{date: .date[0:19], channel: .channel, user: (.userName // .user), text}'
 \`\`\`
 
 ## Tools
@@ -449,75 +394,64 @@ function formatToolArgs(_toolName: string, args: Record<string, unknown>): strin
 	return lines.join("\n");
 }
 
-// Cache runners per channel
-const channelRunners = new Map<string, AgentRunner>();
+// Cache runners per awareness dir
+const runners = new Map<string, AgentRunner>();
 
 /**
- * Get or create an AgentRunner for a channel (or trunk).
- * Runners are cached - one per channel/trunk, persistent across messages.
- *
- * @param channelNameMap - For trunk mode: maps channel IDs to names for message tagging
+ * Get or create an AgentRunner for the unified awareness.
+ * One runner per agent process — persistent across messages.
  */
 export function getOrCreateRunner(
 	sandboxConfig: SandboxConfig,
-	channelId: string,
-	channelDir: string,
+	awarenessDir: string,
 	formatInstructions: string,
 	extraSkillsDirs: string[] = [],
 	extraTools: AgentTool<any>[] = [],
-	channelNameMap?: Map<string, string>,
 ): AgentRunner {
-	const existing = channelRunners.get(channelId);
+	const existing = runners.get(awarenessDir);
 	if (existing) return existing;
 
-	const runner = createRunner(sandboxConfig, channelId, channelDir, formatInstructions, extraSkillsDirs, extraTools, channelNameMap);
-	channelRunners.set(channelId, runner);
+	const runner = createRunner(sandboxConfig, awarenessDir, formatInstructions, extraSkillsDirs, extraTools);
+	runners.set(awarenessDir, runner);
 	return runner;
 }
 
 /**
- * Create a new AgentRunner for a channel.
- * Sets up the session and subscribes to events once.
+ * Create a new AgentRunner for the unified awareness.
  */
 function createRunner(
 	sandboxConfig: SandboxConfig,
-	channelId: string,
-	channelDir: string,
+	awarenessDir: string,
 	formatInstructions: string,
 	extraSkillsDirs: string[] = [],
 	extraTools: AgentTool<any>[] = [],
-	channelNameMap?: Map<string, string>,
 ): AgentRunner {
-	const isTrunk = channelId === "_trunk";
 	const t0 = performance.now();
 	const executor = createExecutor(sandboxConfig);
-	const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
+	const workspacePath = executor.getWorkspacePath(join(awarenessDir, ".."));
 
-	// Create tools (core + any extras like heartbeat's send_message)
+	// Create tools (core + extras like send_message, set_working_channel)
 	const tools = [...createMomTools(executor), ...extraTools];
 
 	// Minimal system prompt for agent creation — will be replaced with full prompt in run()
 	const systemPrompt = "Initializing...";
 
 	// Create session manager and settings manager
-	// Use a fixed context.jsonl file per channel (not timestamped like coding-agent)
-	const contextFile = join(channelDir, "context.jsonl");
-	const workspaceDir = join(channelDir, "..");
+	const contextFile = join(awarenessDir, "context.jsonl");
+	const workspaceDir = join(awarenessDir, "..");
 	const settingsManager = new MomSettingsManager(workspaceDir);
 
 	// Create AuthStorage and ModelRegistry
-	// Important: point ModelRegistry at workspace models.json (/data/models.json)
-	// so custom providers (e.g. fireworks proxy) are available to /model and runtime.
 	const authStorage = AuthStorage.create();
 	const modelRegistry = new ModelRegistry(authStorage, join(workspaceDir, "models.json"));
 
-	// Register Fireworks provider (US-hosted inference for MiniMax, DeepSeek, Kimi)
+	// Register Fireworks provider
 	registerFireworksProvider(modelRegistry);
 
 	// Resolve model: env vars > settings.json > defaults
 	const model = resolveModel(workspaceDir, modelRegistry);
 
-	// Create agent — getApiKey is provider-generic (resolves via AuthStorage for any provider)
+	// Create agent
 	const agent = new Agent({
 		initialState: {
 			systemPrompt,
@@ -529,14 +463,12 @@ function createRunner(
 		getApiKey: async (provider: string) => resolveApiKey(authStorage, provider),
 	});
 
-	// Defer context loading to run() — avoid double-reading from R2
-	// SessionManager.open() and buildSessionContext() read context.jsonl over s3fs,
-	// and run() will read it again anyway. Do it once.
+	// Defer context loading to run()
 	let sessionManager: SessionManager | null = null;
 	const getSessionManager = () => {
 		if (!sessionManager) {
 			const t = performance.now();
-			sessionManager = SessionManager.open(contextFile, channelDir);
+			sessionManager = SessionManager.open(contextFile, awarenessDir);
 			log.logInfo(`[perf] SessionManager.open: ${(performance.now() - t).toFixed(0)}ms`);
 		}
 		return sessionManager;
@@ -559,7 +491,7 @@ function createRunner(
 
 	const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 
-	// Session created lazily on first run (needs sessionManager which reads R2)
+	// Session created lazily on first run
 	let session: AgentSession | null = null;
 	const getSession = () => {
 		if (!session) {
@@ -572,13 +504,12 @@ function createRunner(
 				resourceLoader,
 				baseToolsOverride,
 			});
-			// Subscribe to events
 			session.subscribe(eventHandler);
 		}
 		return session;
 	};
 
-	// Mutable per-run state - event handler references this
+	// Mutable per-run state
 	const runState = {
 		ctx: null as MomContext | null,
 		logCtx: null as { channelId: string; userName?: string; channelName?: string } | null,
@@ -596,13 +527,11 @@ function createRunner(
 		},
 		stopReason: "stop",
 		errorMessage: undefined as string | undefined,
-		/** Tracks whether the initial prompt has been sent — subsequent user messages are steered */
 		initialPromptSent: false,
 	};
 
-	// Event handler — extracted so it can be attached when session is lazily created
+	// Event handler
 	const eventHandler = async (event: any) => {
-		// Skip if no active run
 		if (!runState.ctx || !runState.logCtx || !runState.queue) return;
 
 		const { ctx, logCtx, queue, pendingTools } = runState;
@@ -634,7 +563,6 @@ function createRunner(
 				log.logToolSuccess(logCtx, agentEvent.toolName, durationMs, resultStr);
 			}
 
-			// Post args + result to thread
 			const label = pending?.args ? (pending.args as { label?: string }).label : undefined;
 			const argsFormatted = pending
 				? formatToolArgs(agentEvent.toolName, pending.args as Record<string, unknown>)
@@ -657,14 +585,11 @@ function createRunner(
 				log.logResponseStart(logCtx);
 			} else if (agentEvent.message.role === "user") {
 				if (runState.initialPromptSent) {
-					// A user message appeared mid-run — this is a steered message.
-					// Restart the working message so the continuation gets a fresh Message 1.
-					log.logInfo(`[${logCtx.channelId}] Steered message detected, restarting working message`);
+					log.logInfo(`[awareness] Steered message detected, restarting working message`);
 					queue.enqueue(async () => {
 						await ctx.restartWorking();
 					}, "restart working for steer");
 				} else {
-					// First user message in this run — mark as sent so subsequent ones trigger steer UX
 					runState.initialPromptSent = true;
 				}
 			}
@@ -739,7 +664,7 @@ function createRunner(
 		}
 	};
 
-	// Message length limit (adapter-specific)
+	// Message length limit
 	const MAX_MESSAGE_LENGTH = 40000;
 	const splitMessage = (text: string): string[] => {
 		if (text.length <= MAX_MESSAGE_LENGTH) return [text];
@@ -764,30 +689,13 @@ function createRunner(
 		): Promise<{ stopReason: string; errorMessage?: string }> {
 			const tRun = performance.now();
 
-			// Ensure channel directory exists
-			await mkdir(channelDir, { recursive: true });
+			// Ensure awareness directory exists
+			await mkdir(awarenessDir, { recursive: true });
 
-			// --- Parallel R2 reads ---
-			// These all hit s3fs (network I/O). Run concurrently instead of sequentially.
 			const tR2 = performance.now();
-
 			const sm = getSessionManager();
 
-			// syncLogToSessionManager reads log.jsonl, buildSessionContext reads context.jsonl,
-			// getMemory reads MEMORY.md, loadMomSkills scans skills dirs.
-			// sync must happen before buildSessionContext, but memory/skills are independent.
-			// For trunk mode, sync logs from all Slack channel directories
-			const syncedCount = isTrunk
-				? await syncLogToSessionManager(sm, channelDir, ctx.message.ts, channelNameMap)
-				: await syncLogToSessionManager(sm, channelDir, ctx.message.ts);
-			if (syncedCount > 0) {
-				log.logInfo(`[${channelId}] Synced ${syncedCount} messages from log.jsonl`);
-			}
-			log.logInfo(`[perf] log sync: ${(performance.now() - tR2).toFixed(0)}ms`);
-
-			// These three are independent — but they're sync fs calls (readFileSync via s3fs).
-			// We can't truly parallelize sync calls without worker threads.
-			// For now, instrument each one so we know where the time goes.
+			// No sync step — the runner is the sole writer to context.jsonl
 			const tCtx = performance.now();
 			const reloadedSession = sm.buildSessionContext();
 			log.logInfo(`[perf] buildSessionContext: ${(performance.now() - tCtx).toFixed(0)}ms`);
@@ -800,45 +708,41 @@ function createRunner(
 			}
 
 			const tMem = performance.now();
-			const memory = getMemory(channelDir, isTrunk);
+			const memory = getMemory(join(awarenessDir, ".."));
 			log.logInfo(`[perf] getMemory: ${(performance.now() - tMem).toFixed(0)}ms`);
 
 			const tSkills = performance.now();
-			const skills = loadMomSkills(channelDir, workspacePath, extraSkillsDirs);
+			const skills = loadMomSkills(awarenessDir, workspacePath, extraSkillsDirs);
 			log.logInfo(`[perf] loadMomSkills (${skills.length} skills): ${(performance.now() - tSkills).toFixed(0)}ms`);
 
 			log.logInfo(`[perf] total R2 reads: ${(performance.now() - tR2).toFixed(0)}ms`);
 
 			// Build system prompt with fresh data
 			const currentSession = getSession();
-			const trunkInfo = isTrunk ? {
-				displayChannelId: ctx.message.channel,
-				displayChannelName: ctx.channelName || channelNameMap?.get(ctx.message.channel),
-			} : undefined;
 			const systemPrompt = buildSystemPrompt(
 				workspacePath,
-				channelId,
 				memory,
 				sandboxConfig,
 				ctx.channels,
 				ctx.users,
 				skills,
 				formatInstructions,
-				trunkInfo,
+				ctx.message.channel,
+				ctx.channelName,
 			);
 			currentSession.agent.setSystemPrompt(systemPrompt);
 
-			// Re-resolve model each run (picks up /model command changes from settings.json)
+			// Re-resolve model each run
 			const currentModel = resolveModel(workspaceDir, modelRegistry);
 			const agentModel = agent.state.model;
 			if (agentModel && (currentModel.id !== agentModel.id || currentModel.provider !== agentModel.provider)) {
-				log.logInfo(`[${channelId}] Model changed to ${currentModel.provider}/${currentModel.id}`);
+				log.logInfo(`[awareness] Model changed to ${currentModel.provider}/${currentModel.id}`);
 				agent.setModel(currentModel);
 			}
 
 			// Set up file upload function
 			setUploadFunction(async (filePath: string, title?: string) => {
-				const hostPath = translateToHostPath(filePath, channelDir, workspacePath, channelId);
+				const hostPath = translateToHostPath(filePath, awarenessDir, workspacePath);
 				await ctx.uploadFile(hostPath, title);
 			});
 
@@ -896,8 +800,7 @@ function createRunner(
 			log.logInfo(`Context sizes - system: ${systemPrompt.length} chars, memory: ${memory.length} chars`);
 			log.logInfo(`Channels: ${ctx.channels.length}, Users: ${ctx.users.length}`);
 
-			// Build user message with timestamp and username prefix
-			// Format: "[YYYY-MM-DD HH:MM:SS+HH:MM] [username]: message" so LLM knows when and who
+			// Build user message with timestamp, channel tag, and username
 			const now = new Date();
 			const pad = (n: number) => n.toString().padStart(2, "0");
 			const offset = -now.getTimezoneOffset();
@@ -905,14 +808,10 @@ function createRunner(
 			const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
 			const offsetMins = pad(Math.abs(offset) % 60);
 			const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetMins}`;
-			// For trunk mode, tag messages with source channel and adapter type
-			let userMessage: string;
-			if (isTrunk) {
-				const channelLabel = channelNameMap?.get(ctx.message.channel) || ctx.message.channel;
-				userMessage = `[${timestamp}] [${channelLabel}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
-			} else {
-				userMessage = `[${timestamp}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
-			}
+
+			// Always tag messages with source channel
+			const channelLabel = ctx.channelName || ctx.message.channel;
+			const userMessage = `[${timestamp}] [${channelLabel}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
 
 			const imageAttachments: ImageContent[] = [];
 			const nonImagePaths: string[] = [];
@@ -936,32 +835,30 @@ function createRunner(
 				}
 			}
 
+			let finalUserMessage = userMessage;
 			if (nonImagePaths.length > 0) {
-				userMessage += `\n\n<attachments>\n${nonImagePaths.join("\n")}\n</attachments>`;
+				finalUserMessage += `\n\n<attachments>\n${nonImagePaths.join("\n")}\n</attachments>`;
 			}
 
 			// Debug: write context to last_prompt.jsonl
 			const debugContext = {
 				systemPrompt,
 				messages: currentSession.messages,
-				newUserMessage: userMessage,
+				newUserMessage: finalUserMessage,
 				imageAttachmentCount: imageAttachments.length,
 			};
-			await writeFile(join(channelDir, "last_prompt.jsonl"), JSON.stringify(debugContext, null, 2));
+			await writeFile(join(awarenessDir, "last_prompt.jsonl"), JSON.stringify(debugContext, null, 2));
 
-			log.logInfo(`[trunk] Pre-prompt: ${currentSession.messages.length} messages in context, trunk=${isTrunk}`);
+			log.logInfo(`[awareness] Pre-prompt: ${currentSession.messages.length} messages in context`);
 
 			const tPrompt = performance.now();
-			await currentSession.prompt(userMessage, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+			await currentSession.prompt(finalUserMessage, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
 			log.logInfo(`[perf] session.prompt (incl API): ${(performance.now() - tPrompt).toFixed(0)}ms`);
 
 			// If overflow error triggered background compaction+retry, wait for it.
-			// Agent.emit() doesn't await async handlers, so _runAutoCompaction runs
-			// detached. waitForIdle() waits for any in-flight agent.continue() call.
 			if (runState.stopReason === "error") {
 				await agent.waitForIdle();
 
-				// Re-read result — background retry may have succeeded
 				const msgs = currentSession.messages;
 				const last = msgs.filter((m) => m.role === "assistant").pop() as any;
 				if (last && last.stopReason && last.stopReason !== "error") {
@@ -973,7 +870,7 @@ function createRunner(
 			// Wait for queued messages
 			await queueChain;
 
-			// Handle error case - update main message and post error to thread
+			// Handle error case
 			if (runState.stopReason === "error" && runState.errorMessage) {
 				try {
 					await ctx.sendFinalResponse("_Sorry, something went wrong_");
@@ -992,7 +889,7 @@ function createRunner(
 						.map((c) => c.text)
 						.join("\n") || "";
 
-				// Check for [SILENT] marker - delete message and thread instead of posting
+				// Check for [SILENT] marker
 				if (finalText.trim() === "[SILENT]" || finalText.trim().startsWith("[SILENT]")) {
 					try {
 						await ctx.deleteMessage();
@@ -1015,9 +912,8 @@ function createRunner(
 				}
 			}
 
-			// Log usage summary with context info
+			// Log usage summary
 			if (runState.totalUsage.cost.total > 0) {
-				// Get last non-aborted assistant message for context calculation
 				const messages = currentSession.messages;
 				const lastAssistantMessage = messages
 					.slice()
@@ -1054,10 +950,10 @@ function createRunner(
 			const s = getSession();
 			if (s.isStreaming) {
 				s.steer(text).catch((err: Error) => {
-					log.logWarning(`[${channelId}] steer failed`, err.message);
+					log.logWarning(`[awareness] steer failed`, err.message);
 				});
 			} else {
-				log.logWarning(`[${channelId}] steer called but not streaming, ignoring`);
+				log.logWarning(`[awareness] steer called but not streaming, ignoring`);
 			}
 		},
 	};
@@ -1068,17 +964,12 @@ function createRunner(
  */
 function translateToHostPath(
 	containerPath: string,
-	channelDir: string,
+	awarenessDir: string,
 	workspacePath: string,
-	channelId: string,
 ): string {
 	if (workspacePath === "/workspace") {
-		const prefix = `/workspace/${channelId}/`;
-		if (containerPath.startsWith(prefix)) {
-			return join(channelDir, containerPath.slice(prefix.length));
-		}
 		if (containerPath.startsWith("/workspace/")) {
-			return join(channelDir, "..", containerPath.slice("/workspace/".length));
+			return join(awarenessDir, "..", containerPath.slice("/workspace/".length));
 		}
 	}
 	return containerPath;
