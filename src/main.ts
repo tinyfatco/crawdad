@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { join, resolve } from "path";
+import { DiscordGatewayAdapter } from "./adapters/discord-gateway.js";
 import { DiscordWebhookAdapter } from "./adapters/discord-webhook.js";
 import { EmailWebhookAdapter } from "./adapters/email-webhook.js";
 import { SlackSocketAdapter } from "./adapters/slack-socket.js";
@@ -142,8 +143,13 @@ function parseArgs(): ParsedArgs {
 				adapters.push("telegram");
 			}
 		}
-		if (process.env.MOM_DISCORD_BOT_TOKEN && process.env.MOM_DISCORD_APPLICATION_ID && process.env.MOM_DISCORD_PUBLIC_KEY) {
-			adapters.push("discord:webhook");
+		if (process.env.MOM_DISCORD_BOT_TOKEN) {
+			// Prefer gateway mode (native @mention UX). Fall back to webhook if public key is set.
+			if (process.env.MOM_DISCORD_PUBLIC_KEY && process.env.MOM_DISCORD_APPLICATION_ID) {
+				adapters.push("discord:webhook");
+			} else {
+				adapters.push("discord:gateway");
+			}
 		}
 		if (process.env.MOM_EMAIL_TOOLS_TOKEN) {
 			adapters.push("email:webhook");
@@ -255,6 +261,16 @@ function createAdapter(name: string): AdapterWithHandler {
 			}
 			return new TelegramWebhookAdapter({ botToken, workingDir, webhookUrl, webhookSecret, skipRegistration });
 		}
+		case "discord":
+		case "discord:gateway": {
+			const discordBotToken = process.env.MOM_DISCORD_BOT_TOKEN;
+			const discordAppId = process.env.MOM_DISCORD_APPLICATION_ID || "";
+			if (!discordBotToken) {
+				console.error("Missing env: MOM_DISCORD_BOT_TOKEN");
+				process.exit(1);
+			}
+			return new DiscordGatewayAdapter({ botToken: discordBotToken, applicationId: discordAppId, workingDir });
+		}
 		case "discord:webhook": {
 			const discordBotToken = process.env.MOM_DISCORD_BOT_TOKEN;
 			const discordAppId = process.env.MOM_DISCORD_APPLICATION_ID;
@@ -278,7 +294,7 @@ function createAdapter(name: string): AdapterWithHandler {
 			return new WebAdapter({ workingDir });
 		}
 		default:
-			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord:webhook', 'email:webhook', or 'web'.`);
+			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord', 'discord:gateway', 'discord:webhook', 'email:webhook', or 'web'.`);
 			process.exit(1);
 	}
 }

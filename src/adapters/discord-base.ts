@@ -306,6 +306,71 @@ When mentioning users, use <@userId> format.`;
 	}
 
 	// ==========================================================================
+	// Shared incoming message handler (used by Gateway adapter)
+	// ==========================================================================
+
+	protected handleIncomingMessage(msg: DiscordMessage): void {
+		// Ignore bot messages
+		if (msg.author.bot) return;
+		// Ignore empty messages (unless they have attachments)
+		if (!msg.content && (!msg.attachments || msg.attachments.length === 0)) return;
+
+		const channelId = msg.channel_id;
+		const userId = msg.author.id;
+		const userName = msg.author.username;
+		const displayName = msg.author.global_name || msg.author.username;
+
+		// Track user
+		this.users.set(userId, { id: userId, userName, displayName });
+
+		// Track channel — use guild channel name if available, fall back to DM
+		const isDM = !msg.guild_id;
+		const channelName = this.channels.get(channelId)?.name || (isDM ? `DM:${userName}` : channelId);
+		this.channels.set(channelId, { id: channelId, name: channelName });
+
+		const text = stripDiscordMentions(msg.content || "");
+
+		const momEvent: MomEvent = {
+			type: isDM ? "dm" : "mention",
+			channel: channelId,
+			ts: msg.id,
+			user: userId,
+			text,
+		};
+
+		// Log user message
+		this.logToFile({
+			date: new Date().toISOString(),
+			ts: msg.id,
+			channel: `discord:#${channelName}`,
+			channelId,
+			user: userId,
+			userName,
+			displayName,
+			text: msg.content || "",
+			attachments: [],
+			isBot: false,
+		});
+
+		// Check for stop
+		if (text.toLowerCase().trim() === "stop") {
+			if (this.handler.isRunning(channelId)) {
+				this.handler.handleStop(channelId, this);
+			} else {
+				this.postMessage(channelId, "_Nothing running_");
+			}
+			return;
+		}
+
+		// Steer into active run or start new one
+		if (this.handler.isRunning(channelId)) {
+			this.handler.handleSteer(momEvent, this);
+		} else {
+			this.enqueueWork(channelId, () => this.handler.handleEvent(momEvent, this));
+		}
+	}
+
+	// ==========================================================================
 	// Context creation
 	// ==========================================================================
 
@@ -438,4 +503,30 @@ function chunkText(text: string, maxLength: number): string[] {
 	}
 
 	return chunks;
+}
+
+// ============================================================================
+// Discord Gateway message type (MESSAGE_CREATE payload)
+// ============================================================================
+
+export interface DiscordMessage {
+	id: string;
+	channel_id: string;
+	guild_id?: string;
+	author: {
+		id: string;
+		username: string;
+		global_name?: string;
+		bot?: boolean;
+	};
+	content: string;
+	timestamp: string;
+	attachments?: Array<{
+		id: string;
+		filename: string;
+		url: string;
+		size: number;
+	}>;
+	mentioned_users?: Array<{ id: string }>;
+	mentions?: Array<{ id: string }>;
 }
