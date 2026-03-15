@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { join, resolve } from "path";
+import { DiscordWebhookAdapter } from "./adapters/discord-webhook.js";
 import { EmailWebhookAdapter } from "./adapters/email-webhook.js";
 import { SlackSocketAdapter } from "./adapters/slack-socket.js";
 import { SlackWebhookAdapter } from "./adapters/slack-webhook.js";
@@ -27,11 +28,17 @@ import { createSetWorkingChannelTool } from "./tools/set-working-channel.js";
  * Get a human-readable label for a channel, including adapter type.
  * Used for tagging messages in the unified awareness context.
  */
+/** Discord snowflake IDs are 17-20 digit numbers (vs Telegram's shorter numeric IDs) */
+function isDiscordSnowflake(id: string): boolean {
+	return /^\d{17,20}$/.test(id);
+}
+
 function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): string {
 	for (const adapter of adaptersList) {
 		const ch = adapter.getChannel(channelId);
 		if (ch) {
 			if (/^[CDG]/.test(channelId)) return `slack:#${ch.name}`;
+			if (isDiscordSnowflake(channelId)) return `discord:#${ch.name}`;
 			if (/^-?\d+$/.test(channelId)) return `telegram:${ch.name}`;
 			if (channelId.startsWith("email-")) return `email:${channelId.replace("email-", "")}`;
 			if (channelId.startsWith("web-")) return `web:${ch.name}`;
@@ -40,6 +47,7 @@ function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): st
 	}
 	// Fallback for unknown channels
 	if (/^[CDG]/.test(channelId)) return `slack:${channelId}`;
+	if (isDiscordSnowflake(channelId)) return `discord:${channelId}`;
 	if (/^-?\d+$/.test(channelId)) return `telegram:${channelId}`;
 	if (channelId.startsWith("email-")) return `email:${channelId.replace("email-", "")}`;
 	if (channelId.startsWith("web-")) return `web:${channelId}`;
@@ -54,6 +62,7 @@ function getChannelDisplayName(channelId: string, adaptersList: PlatformAdapter[
 		const ch = adapter.getChannel(channelId);
 		if (ch) {
 			if (/^[CDG]/.test(channelId)) return `#${ch.name}`;
+			if (isDiscordSnowflake(channelId)) return `discord:#${ch.name}`;
 			return `${adapter.name}:${ch.name}`;
 		}
 	}
@@ -132,6 +141,9 @@ function parseArgs(): ParsedArgs {
 			} else {
 				adapters.push("telegram");
 			}
+		}
+		if (process.env.MOM_DISCORD_BOT_TOKEN && process.env.MOM_DISCORD_APPLICATION_ID && process.env.MOM_DISCORD_PUBLIC_KEY) {
+			adapters.push("discord:webhook");
 		}
 		if (process.env.MOM_EMAIL_TOOLS_TOKEN) {
 			adapters.push("email:webhook");
@@ -243,6 +255,16 @@ function createAdapter(name: string): AdapterWithHandler {
 			}
 			return new TelegramWebhookAdapter({ botToken, workingDir, webhookUrl, webhookSecret, skipRegistration });
 		}
+		case "discord:webhook": {
+			const discordBotToken = process.env.MOM_DISCORD_BOT_TOKEN;
+			const discordAppId = process.env.MOM_DISCORD_APPLICATION_ID;
+			const discordPublicKey = process.env.MOM_DISCORD_PUBLIC_KEY;
+			if (!discordBotToken || !discordAppId || !discordPublicKey) {
+				console.error("Missing env: MOM_DISCORD_BOT_TOKEN, MOM_DISCORD_APPLICATION_ID, MOM_DISCORD_PUBLIC_KEY");
+				process.exit(1);
+			}
+			return new DiscordWebhookAdapter({ botToken: discordBotToken, applicationId: discordAppId, publicKey: discordPublicKey, workingDir });
+		}
 		case "email:webhook": {
 			const toolsToken = process.env.MOM_EMAIL_TOOLS_TOKEN;
 			if (!toolsToken) {
@@ -256,7 +278,7 @@ function createAdapter(name: string): AdapterWithHandler {
 			return new WebAdapter({ workingDir });
 		}
 		default:
-			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', 'email:webhook', or 'web'.`);
+			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord:webhook', 'email:webhook', or 'web'.`);
 			process.exit(1);
 	}
 }
@@ -446,6 +468,7 @@ for (const adapter of adapters) {
 const DISPATCH_PATHS: Record<string, string> = {
 	"slack:webhook": "/slack/events",
 	"telegram:webhook": "/telegram/webhook",
+	"discord:webhook": "/discord/interactions",
 	"email:webhook": "/email/inbound",
 	"web": "/web/chat",
 };
