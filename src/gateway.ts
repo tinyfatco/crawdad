@@ -29,8 +29,6 @@ export interface GatewayOptions {
 	uiDir?: string;
 	/** Directory to scope file API reads to */
 	workspaceDir?: string;
-	/** Token required for UI and file API access (skipped for webhook routes) */
-	webToken?: string;
 }
 
 export class Gateway {
@@ -40,7 +38,6 @@ export class Gateway {
 	private server: Server | null = null;
 	private uiDir: string | null = null;
 	private workspaceDir: string | null = null;
-	private webToken: string | null = null;
 
 	constructor(options: GatewayOptions = {}) {
 		if (options.uiDir && existsSync(options.uiDir)) {
@@ -50,7 +47,6 @@ export class Gateway {
 		if (options.workspaceDir) {
 			this.workspaceDir = resolve(options.workspaceDir);
 		}
-		this.webToken = options.webToken || null;
 	}
 
 	/** Register a POST route handler (e.g., "/slack/events" → adapter.dispatch) */
@@ -69,24 +65,6 @@ export class Gateway {
 	markReady(path: string): void {
 		this.readyRoutes.add(path);
 		log.logInfo(`[gateway] adapter ready: POST ${path}`);
-	}
-
-	/** Check WEB_TOKEN auth. Returns true if authorized, false if rejected (response already sent). */
-	private checkWebAuth(req: IncomingMessage, res: ServerResponse): boolean {
-		if (!this.webToken) return true;
-
-		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-		const tokenParam = url.searchParams.get("token");
-		const authHeader = req.headers.authorization;
-		const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-
-		if (tokenParam === this.webToken || bearerToken === this.webToken) {
-			return true;
-		}
-
-		res.writeHead(401, { "Content-Type": "application/json" });
-		res.end(JSON.stringify({ error: "Unauthorized" }));
-		return false;
 	}
 
 	/** Serve a static file from uiDir */
@@ -236,22 +214,19 @@ export class Gateway {
 				}
 			}
 
-			// File API routes — require web auth
+			// File API routes
 			if (req.method === "GET" && urlPath === "/api/files") {
-				if (!this.checkWebAuth(req, res)) return;
 				this.handleFilesApi(req, res);
 				return;
 			}
 
 			if (req.method === "GET" && urlPath === "/api/file") {
-				if (!this.checkWebAuth(req, res)) return;
 				this.handleFileApi(req, res);
 				return;
 			}
 
-			// Static UI serving — require web auth
+			// Static UI serving
 			if (req.method === "GET" && this.uiDir) {
-				if (!this.checkWebAuth(req, res)) return;
 
 				// Serve assets directly
 				if (urlPath.startsWith("/assets/")) {

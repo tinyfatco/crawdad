@@ -13,7 +13,7 @@ import { type AgentRunner, getOrCreateRunner } from "./agent.js";
 import { handleSlashCommand } from "./commands.js";
 import { downloadChannel } from "./download.js";
 import { computeWakeManifest, createEventsWatcher } from "./events.js";
-import { Gateway, type GatewayOptions } from "./gateway.js";
+import { Gateway } from "./gateway.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
@@ -485,7 +485,6 @@ const DISPATCH_PATHS: Record<string, string> = {
 const gateway = new Gateway({
 	uiDir: parsedArgs.uiDir,
 	workspaceDir: workingDir,
-	webToken: process.env.WEB_TOKEN,
 });
 
 // Status endpoint — reports whether the agent is currently running.
