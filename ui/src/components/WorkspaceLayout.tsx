@@ -5,6 +5,7 @@ import { FileViewer } from './FileViewer';
 
 export function WorkspaceLayout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [viewingFile, setViewingFile] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(240);
@@ -16,6 +17,16 @@ export function WorkspaceLayout() {
   const handleFileSelect = (path: string) => {
     setSelectedPath(path);
     setViewingFile(path);
+    setMobileDrawerOpen(false);
+  };
+
+  const toggleSidebar = () => {
+    // On mobile (< 768px), toggle the drawer overlay
+    if (window.innerWidth < 768) {
+      setMobileDrawerOpen(!mobileDrawerOpen);
+    } else {
+      setSidebarCollapsed(!sidebarCollapsed);
+    }
   };
 
   const toggleTheme = () => {
@@ -59,7 +70,7 @@ export function WorkspaceLayout() {
         <div className="header-left">
           <button
             className="header-btn"
-            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            onClick={toggleSidebar}
             title={sidebarCollapsed ? 'Show files' : 'Hide files'}
           >
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
@@ -95,6 +106,19 @@ export function WorkspaceLayout() {
             <ChatPane />
           )}
         </div>
+
+        {/* Mobile drawer overlay */}
+        {mobileDrawerOpen && (
+          <>
+            <div className="mobile-overlay" onClick={() => setMobileDrawerOpen(false)} />
+            <div className="mobile-drawer">
+              <div className="sidebar-header">
+                <span className="sidebar-title">Files</span>
+              </div>
+              <FileTree selectedPath={selectedPath} onFileSelect={handleFileSelect} />
+            </div>
+          </>
+        )}
       </div>
 
       <style>{styles}</style>
@@ -624,6 +648,34 @@ const styles = `
     color: var(--text);
     white-space: pre-wrap;
     word-break: break-all;
+  }
+
+  /* Mobile drawer */
+  .mobile-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 40;
+  }
+
+  .mobile-drawer {
+    position: fixed;
+    top: 44px;
+    left: 0;
+    bottom: 0;
+    width: 280px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: slide-in 0.15s ease-out;
+  }
+
+  @keyframes slide-in {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(0); }
   }
 
   /* Responsive */
