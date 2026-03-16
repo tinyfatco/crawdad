@@ -13,7 +13,7 @@ import { type AgentRunner, getOrCreateRunner } from "./agent.js";
 import { handleSlashCommand } from "./commands.js";
 import { downloadChannel } from "./download.js";
 import { computeWakeManifest, createEventsWatcher } from "./events.js";
-import { Gateway } from "./gateway.js";
+import { Gateway, type GatewayOptions } from "./gateway.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
@@ -80,6 +80,7 @@ interface ParsedArgs {
 	adapters: string[];
 	port: number;
 	skillsDirs: string[];
+	uiDir?: string;
 }
 
 function parseArgs(): ParsedArgs {
@@ -89,6 +90,7 @@ function parseArgs(): ParsedArgs {
 	let downloadChannelId: string | undefined;
 	let adapterArg: string | undefined;
 	let port: number | undefined;
+	let uiDir: string | undefined;
 	const skillsDirs: string[] = [];
 
 	for (let i = 0; i < args.length; i++) {
@@ -113,6 +115,10 @@ function parseArgs(): ParsedArgs {
 			skillsDirs.push(resolve(arg.slice("--skills=".length)));
 		} else if (arg === "--skills") {
 			skillsDirs.push(resolve(args[++i] || ""));
+		} else if (arg.startsWith("--ui=")) {
+			uiDir = resolve(arg.slice("--ui=".length));
+		} else if (arg === "--ui") {
+			uiDir = resolve(args[++i] || "");
 		} else if (!arg.startsWith("-")) {
 			workingDir = arg;
 		}
@@ -166,6 +172,7 @@ function parseArgs(): ParsedArgs {
 		adapters,
 		port: resolvedPort,
 		skillsDirs,
+		uiDir,
 	};
 }
 
@@ -475,7 +482,11 @@ const DISPATCH_PATHS: Record<string, string> = {
 
 // Start gateway — binds HTTP port before adapter init so callers can
 // detect the port is up. Routes return 503 until their adapter is ready.
-const gateway = new Gateway();
+const gateway = new Gateway({
+	uiDir: parsedArgs.uiDir,
+	workspaceDir: workingDir,
+	webToken: process.env.WEB_TOKEN,
+});
 
 // Status endpoint — reports whether the agent is currently running.
 gateway.registerGet("/status", async (_req, res) => {
