@@ -1,13 +1,15 @@
 import { useRef, useEffect, useCallback } from 'react';
+import { useAwareness } from '../hooks/useAwareness';
 import { useStreamingChat } from '../hooks/useStreamingChat';
+import { AwarenessEntryComponent } from './AwarenessEntry';
 import { MessageBubble } from './MessageBubble';
 import { InputBar } from './InputBar';
 
 export function ChatPane() {
+  const { entries, isLoading: awarenessLoading } = useAwareness();
   const {
-    messages,
+    messages: liveMessages,
     isStreaming,
-    status,
     error,
     sendMessage,
     abortStream,
@@ -20,18 +22,27 @@ export function ChatPane() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
-  useEffect(scrollToBottom, [messages, scrollToBottom]);
+  useEffect(scrollToBottom, [entries, liveMessages, scrollToBottom]);
 
   return (
     <div className="chat-pane">
       <div className="chat-messages">
-        {messages.length === 0 ? (
+        {awarenessLoading ? (
+          <div className="chat-empty">
+            <p className="chat-empty-text">Loading awareness...</p>
+          </div>
+        ) : entries.length === 0 && liveMessages.length === 0 ? (
           <div className="chat-empty">
             <p className="chat-empty-text">Send a message to get started.</p>
           </div>
         ) : (
           <div className="chat-stream">
-            {messages.map((message) => (
+            {/* Historical awareness entries */}
+            {entries.map((entry) => (
+              <AwarenessEntryComponent key={entry.id} entry={entry} />
+            ))}
+            {/* Live SSE messages from current session */}
+            {liveMessages.map((message) => (
               <MessageBubble key={message.id} message={message} />
             ))}
           </div>

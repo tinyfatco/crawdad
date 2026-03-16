@@ -21,8 +21,9 @@ export function WorkspaceLayout() {
   };
 
   const toggleSidebar = () => {
-    // On mobile (< 768px), toggle the drawer overlay
-    if (window.innerWidth < 768) {
+    // Check CSS media query instead of window.innerWidth for reliable mobile detection
+    const isMobile = window.matchMedia('(max-width: 768px)').matches;
+    if (isMobile) {
       setMobileDrawerOpen(!mobileDrawerOpen);
     } else {
       setSidebarCollapsed(!sidebarCollapsed);
@@ -648,6 +649,117 @@ const styles = `
     color: var(--text);
     white-space: pre-wrap;
     word-break: break-all;
+  }
+
+  /* Awareness entries */
+  .awareness-entry {
+    max-width: 100%;
+  }
+
+  .awareness-entry.user-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .awareness-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.75rem;
+  }
+
+  .channel-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    letter-spacing: 0.02em;
+    border: 1px solid;
+  }
+
+  .awareness-username {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+  }
+
+  .awareness-user-text {
+    color: var(--text);
+    font-size: 0.95rem;
+    line-height: 1.5;
+  }
+
+  .awareness-entry.assistant-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    color: var(--text);
+    line-height: 1.7;
+    font-size: 1rem;
+  }
+
+  .awareness-entry.assistant-entry .markdown-content p { margin-bottom: 0.5rem; }
+  .awareness-entry.assistant-entry .markdown-content p:last-child { margin-bottom: 0; }
+
+  .awareness-thinking {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-style: italic;
+    cursor: pointer;
+    padding: 0.3rem 0;
+  }
+
+  .awareness-thinking:hover { color: var(--text); }
+
+  .thinking-icon {
+    font-size: 0.65rem;
+    margin-top: 0.15rem;
+    flex-shrink: 0;
+  }
+
+  .thinking-text {
+    line-height: 1.4;
+  }
+
+  .awareness-tool-result {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+  }
+
+  .tool-result-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.3rem 0.5rem;
+    background: var(--bg-secondary);
+    border: none;
+    border-radius: 3px;
+    color: var(--text-muted);
+    text-align: left;
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+  }
+
+  .tool-result-toggle:hover { color: var(--text); }
+
+  .tool-result-preview {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tool-result-entry {
+    margin: 0.15rem 0;
   }
 
   /* Mobile drawer */
