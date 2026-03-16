@@ -5,8 +5,10 @@ interface FileViewerProps {
   onClose: () => void;
 }
 
+import { apiUrl } from '../api';
+
 async function fetchFile(path: string): Promise<string> {
-  const response = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
+  const response = await fetch(apiUrl(`/api/file?path=${encodeURIComponent(path)}`));
   if (!response.ok) throw new Error(`Failed to load file: ${response.status}`);
   return response.text();
 }

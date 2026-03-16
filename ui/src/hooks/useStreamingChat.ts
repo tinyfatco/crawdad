@@ -5,7 +5,8 @@
  * Speaks troublemaker's native protocol: token, tool_start, tool_end, run_complete.
  */
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef } from 'react';
+import { apiUrl } from '../api';
 
 export interface ToolCall {
   id?: string;
@@ -177,7 +178,7 @@ export function useStreamingChat(): UseStreamingChatReturn {
     abortControllerRef.current = controller;
 
     try {
-      const response = await fetch('/web/chat', {
+      const response = await fetch(apiUrl('/web/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text }),
