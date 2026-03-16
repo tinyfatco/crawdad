@@ -178,16 +178,27 @@ export function useStreamingChat(): UseStreamingChatReturn {
     abortControllerRef.current = controller;
 
     try {
-      const response = await fetch(apiUrl('/web/chat'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text }),
-        signal: controller.signal,
-      });
+      // Retry loop for cold starts (503 = container waking)
+      let response: Response | null = null;
+      for (let attempt = 1; attempt <= 30; attempt++) {
+        response = await fetch(apiUrl('/web/chat'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text }),
+          signal: controller.signal,
+        });
 
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(errText || `HTTP ${response.status}`);
+        if (response.status === 503) {
+          setStatus('connecting');
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+        break;
+      }
+
+      if (!response || !response.ok) {
+        const errText = response ? await response.text() : 'No response';
+        throw new Error(errText || `HTTP ${response?.status}`);
       }
 
       if (!response.body) {
