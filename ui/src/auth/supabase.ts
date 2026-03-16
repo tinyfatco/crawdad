@@ -16,10 +16,15 @@ function getSessionFromCookies(supabaseUrl: string): { access_token: string; ref
     const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${cookieName}=([^;]+)`));
     if (!match) return null;
 
-    const decoded = decodeURIComponent(match[1]);
+    let decoded = decodeURIComponent(match[1]);
+
+    // Supabase SSR cookies use "base64-" prefix
+    if (decoded.startsWith('base64-')) {
+      decoded = atob(decoded.slice(7));
+    }
+
     const parsed = JSON.parse(decoded);
 
-    // Could be a direct object or base64-encoded
     if (parsed.access_token && parsed.refresh_token) {
       return parsed;
     }
