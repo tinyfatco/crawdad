@@ -461,7 +461,7 @@ const styles = `
   .input-bar textarea {
     flex: 1;
     padding: 0.35rem 0.6rem;
-    font-size: 0.6rem;
+    font-size: 0.75rem;
     background: transparent;
     border: none;
     color: var(--text);
