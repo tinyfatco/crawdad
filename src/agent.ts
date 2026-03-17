@@ -551,6 +551,7 @@ function createRunner(
 			});
 
 			log.logToolStart(logCtx, agentEvent.toolName, label, agentEvent.args as Record<string, unknown>);
+			ctx.emitContentBlock?.({ type: "toolCall", id: agentEvent.toolCallId, name: agentEvent.toolName, arguments: agentEvent.args || {} });
 			queue.enqueue(() => ctx.respond(`_→ ${label}_`, false), "tool label");
 		} else if (event.type === "tool_execution_end") {
 			const agentEvent = event as AgentEvent & { type: "tool_execution_end" };
@@ -577,6 +578,7 @@ function createRunner(
 			if (argsFormatted) threadMessage += `\`\`\`\n${argsFormatted}\n\`\`\`\n`;
 			threadMessage += `*Result:*\n\`\`\`\n${resultStr}\n\`\`\``;
 
+			ctx.emitContentBlock?.({ type: "toolResult", toolCallId: agentEvent.toolCallId, result: resultStr, isError: agentEvent.isError || false });
 			queue.enqueueMessage(threadMessage, "thread", "tool result thread", false);
 
 			if (agentEvent.isError) {
@@ -635,6 +637,7 @@ function createRunner(
 
 				for (const thinking of thinkingParts) {
 					log.logThinking(logCtx, thinking);
+					ctx.emitContentBlock?.({ type: "thinking", thinking });
 					const lines = thinking.trim().split("\n").map((l: string) => l.trim()).filter(Boolean);
 					const formatted = "💭 " + lines.map((l: string) => `_${l}_`).join("\n");
 					queue.enqueueMessage(formatted, "main", "thinking main");
@@ -643,6 +646,7 @@ function createRunner(
 
 				if (text.trim()) {
 					log.logResponse(logCtx, text);
+					ctx.emitContentBlock?.({ type: "text", text });
 					queue.enqueueMessage(text, "main", "response main");
 					queue.enqueueMessage(text, "thread", "response thread", false);
 				}

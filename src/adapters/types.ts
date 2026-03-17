@@ -57,6 +57,8 @@ export interface MomContext {
 	deleteMessage: () => Promise<void>;
 	/** Finalize the current working message and start a fresh one (used by steering) */
 	restartWorking: (headerLine?: string) => Promise<void>;
+	/** Emit a structured content block via SSE (web adapter only, others no-op) */
+	emitContentBlock?: (block: { type: string; [key: string]: unknown }) => void;
 }
 
 /**

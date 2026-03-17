@@ -10,7 +10,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { apiUrl } from '../api';
-import type { AwarenessEntry, TextContent, ToolCallContent, ToolResultContent } from '../types';
+import type { AwarenessEntry } from '../types';
 
 export type StreamStatus =
   | 'idle'
@@ -179,46 +179,45 @@ function processEvent(
   try {
     const parsed = JSON.parse(data);
 
-    if (parsed.type === 'token' && parsed.text) {
+    // Structured content blocks — same types as context.jsonl
+    if (parsed.type === 'text' && parsed.text) {
       setStatus('streaming');
       setEntry((prev) => {
         if (!prev) return prev;
-        const content = [...(prev.content || [])];
-        const last = content[content.length - 1];
-        if (last && last.type === 'text') {
-          content[content.length - 1] = { ...last, text: (last as TextContent).text + parsed.text };
-        } else {
-          content.push({ type: 'text', text: parsed.text });
-        }
-        return { ...prev, content };
+        return { ...prev, content: [...(prev.content || []), { type: 'text' as const, text: parsed.text }] };
       });
-    } else if (parsed.type === 'tool_start') {
+    } else if (parsed.type === 'thinking' && parsed.thinking) {
+      setStatus('streaming');
+      setEntry((prev) => {
+        if (!prev) return prev;
+        return { ...prev, content: [...(prev.content || []), { type: 'thinking' as const, thinking: parsed.thinking }] };
+      });
+    } else if (parsed.type === 'toolCall') {
       setStatus('tool_running');
-      const toolBlock: ToolCallContent = {
-        type: 'toolCall',
-        id: parsed.toolCallId || `tool-${Date.now()}`,
-        name: parsed.toolName || parsed.name,
-        arguments: parsed.args || {},
-      };
       setEntry((prev) => {
         if (!prev) return prev;
-        return { ...prev, content: [...(prev.content || []), toolBlock] };
+        return { ...prev, content: [...(prev.content || []), {
+          type: 'toolCall' as const,
+          id: parsed.id || `tool-${Date.now()}`,
+          name: parsed.name,
+          arguments: parsed.arguments || {},
+        }] };
       });
-    } else if (parsed.type === 'tool_end') {
+    } else if (parsed.type === 'toolResult') {
       setStatus('streaming');
-      const result: ToolResultContent = {
-        type: 'toolResult',
-        toolCallId: parsed.toolCallId || '',
-        result: parsed.resultPreview || parsed.preview || '',
-        isError: parsed.isError,
-      };
       setEntry((prev) => {
         if (!prev) return prev;
-        return { ...prev, content: [...(prev.content || []), result] };
+        return { ...prev, content: [...(prev.content || []), {
+          type: 'toolResult' as const,
+          toolCallId: parsed.toolCallId || '',
+          result: parsed.result || '',
+          isError: parsed.isError,
+        }] };
       });
     } else if (parsed.type === 'error') {
       setError(parsed.message || 'Stream error');
     }
+    // heartbeat, run_complete, status — ignored
   } catch {
     // Non-JSON — skip
   }

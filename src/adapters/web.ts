@@ -274,70 +274,16 @@ Keep responses concise and helpful.`;
 			channels: [],
 			users: [],
 
-			respond: async (text: string, shouldLog = true) => {
-				if (!writer) return;
-
-				// Tool labels: _→ Label_
-				if (!shouldLog && text.startsWith("_→")) {
-					const label = text.replace(/^_→\s*/, "").replace(/_$/, "");
-					lastToolId = `tool-${Date.now()}`;
-					writer.send({
-						type: "tool_start",
-						toolCallId: lastToolId,
-						toolName: label,
-					});
-					return;
-				}
-
-				// Status messages: _Thinking..._, _Compacting..._, _Retrying..._
-				if (!shouldLog && text.startsWith("_") && text.endsWith("_")) {
-					return;
-				}
-
-				// Tool error messages
-				if (!shouldLog && text.startsWith("_Error:")) {
-					if (lastToolId) {
-						writer.send({
-							type: "tool_end",
-							toolCallId: lastToolId,
-							isError: true,
-							resultPreview: text.replace(/^_Error:\s*/, "").replace(/_$/, ""),
-						});
-						lastToolId = undefined;
-					}
-					return;
-				}
-
-				// Response text → token event
-				if (shouldLog && text.trim()) {
-					writer.send({ type: "token", text });
-				}
+			respond: async (_text: string, _shouldLog = true) => {
+				// No-op — structured content delivered via emitContentBlock
 			},
 
 			sendFinalResponse: async (text: string) => {
 				// Final text — already sent via respond(), no need to re-send
 			},
 
-			respondInThread: async (text: string) => {
-				if (!writer) return;
-
-				// Tool result messages: *✓ toolName*: label (1.2s)
-				const toolMatch = text.match(/^\*([✓✗]) (\w+)\*(?:: (.+?))? \((\d+\.\d+)s\)/);
-				if (toolMatch) {
-					const [, status, toolName] = toolMatch;
-					const resultMatch = text.match(/\*Result:\*\n```\n([\s\S]*?)\n```/);
-					const preview = resultMatch ? resultMatch[1] : undefined;
-
-					writer.send({
-						type: "tool_end",
-						toolCallId: lastToolId,
-						toolName,
-						isError: status === "✗",
-						resultPreview: preview,
-					});
-					lastToolId = undefined;
-				}
-				// Other thread messages (thinking, usage summary) — skip
+			respondInThread: async (_text: string) => {
+				// No-op — structured content delivered via emitContentBlock
 			},
 
 			setTyping: async () => {},
@@ -354,6 +300,10 @@ Keep responses concise and helpful.`;
 
 			restartWorking: async () => {
 				// No-op for web — SSE stream is continuous
+			},
+
+			emitContentBlock: (block: { type: string; [key: string]: unknown }) => {
+				if (writer) writer.send(block);
 			},
 		};
 	}
