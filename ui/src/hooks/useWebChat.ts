@@ -139,10 +139,10 @@ export function useWebChat(): UseWebChatReturn {
         });
       }
     } finally {
-      // Clear streaming entries — the awareness stream will deliver the persisted versions.
-      // Keeping them causes a visible double-render before dedup kicks in.
-      setStreamingEntry(null);
-      setUserEntry(null);
+      // Mark streaming done but keep entries visible —
+      // awareness stream is unreliable/slow, so the streaming entry
+      // must stay as the source of truth until dedup hides it.
+      setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
       setIsStreaming(false);
       setStatus('idle');
       abortControllerRef.current = null;
@@ -207,12 +207,21 @@ function processEvent(
         }
         return { ...prev, content };
       });
-    // Complete text/thinking blocks — ignored, deltas handle streaming,
-    // awareness stream handles persistence
+    // Complete content blocks from message_end — replace delta-built content
     } else if (parsed.type === 'text' && parsed.text) {
-      // no-op — deltas already built this up
+      setEntry((prev) => {
+        if (!prev) return prev;
+        // Replace all text blocks with the final complete version
+        const nonText = (prev.content || []).filter((c) => c.type !== 'text');
+        return { ...prev, content: [...nonText, { type: 'text' as const, text: parsed.text }] };
+      });
     } else if (parsed.type === 'thinking' && parsed.thinking) {
-      // no-op — deltas already built this up
+      setEntry((prev) => {
+        if (!prev) return prev;
+        // Replace all thinking blocks with the final complete version
+        const nonThinking = (prev.content || []).filter((c) => c.type !== 'thinking');
+        return { ...prev, content: [{ type: 'thinking' as const, thinking: parsed.thinking }, ...nonThinking] };
+      });
     } else if (parsed.type === 'toolCall') {
       setStatus('tool_running');
       setEntry((prev) => {
