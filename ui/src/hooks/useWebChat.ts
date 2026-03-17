@@ -139,8 +139,9 @@ export function useWebChat(): UseWebChatReturn {
         });
       }
     } finally {
-      setUserEntry(null);
-      setStreamingEntry(null);
+      // Mark streaming done but keep entries visible —
+      // they'll be cleaned up when the awareness stream delivers the real versions
+      setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
       setIsStreaming(false);
       setStatus('idle');
       abortControllerRef.current = null;
@@ -152,8 +153,7 @@ export function useWebChat(): UseWebChatReturn {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-    setUserEntry(null);
-    setStreamingEntry(null);
+    setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
     setIsStreaming(false);
     setStatus('idle');
   }, []);
