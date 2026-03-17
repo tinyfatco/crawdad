@@ -584,6 +584,14 @@ function createRunner(
 			if (agentEvent.isError) {
 				queue.enqueue(() => ctx.respond(`_Error: ${truncate(resultStr, 200)}_`, false), "tool error");
 			}
+		} else if (event.type === "message_update") {
+			const agentEvent = event as AgentEvent & { type: "message_update" };
+			const ame = agentEvent.assistantMessageEvent as any;
+			if (ame.type === "text_delta") {
+				ctx.emitContentBlock?.({ type: "text_delta", delta: ame.delta });
+			} else if (ame.type === "thinking_delta") {
+				ctx.emitContentBlock?.({ type: "thinking_delta", delta: ame.delta });
+			}
 		} else if (event.type === "message_start") {
 			const agentEvent = event as AgentEvent & { type: "message_start" };
 			if (agentEvent.message.role === "assistant") {
@@ -637,7 +645,7 @@ function createRunner(
 
 				for (const thinking of thinkingParts) {
 					log.logThinking(logCtx, thinking);
-					ctx.emitContentBlock?.({ type: "thinking", thinking });
+					// Skip emitContentBlock — thinking deltas already streamed to web
 					const lines = thinking.trim().split("\n").map((l: string) => l.trim()).filter(Boolean);
 					const formatted = "💭 " + lines.map((l: string) => `_${l}_`).join("\n");
 					queue.enqueueMessage(formatted, "main", "thinking main");
@@ -646,7 +654,7 @@ function createRunner(
 
 				if (text.trim()) {
 					log.logResponse(logCtx, text);
-					ctx.emitContentBlock?.({ type: "text", text });
+					// Skip emitContentBlock — text deltas already streamed to web
 					queue.enqueueMessage(text, "main", "response main");
 					queue.enqueueMessage(text, "thread", "response thread", false);
 				}

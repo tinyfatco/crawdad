@@ -179,12 +179,46 @@ function processEvent(
   try {
     const parsed = JSON.parse(data);
 
-    // Structured content blocks — same types as context.jsonl
-    if (parsed.type === 'text' && parsed.text) {
+    // Token-level streaming deltas — append to last block of same type
+    if (parsed.type === 'text_delta' && parsed.delta) {
       setStatus('streaming');
       setEntry((prev) => {
         if (!prev) return prev;
-        return { ...prev, content: [...(prev.content || []), { type: 'text' as const, text: parsed.text }] };
+        const content = [...(prev.content || [])];
+        const last = content[content.length - 1];
+        if (last && last.type === 'text') {
+          content[content.length - 1] = { ...last, text: last.text + parsed.delta };
+        } else {
+          content.push({ type: 'text' as const, text: parsed.delta });
+        }
+        return { ...prev, content };
+      });
+    } else if (parsed.type === 'thinking_delta' && parsed.delta) {
+      setStatus('streaming');
+      setEntry((prev) => {
+        if (!prev) return prev;
+        const content = [...(prev.content || [])];
+        const last = content[content.length - 1];
+        if (last && last.type === 'thinking') {
+          content[content.length - 1] = { ...last, thinking: (last as any).thinking + parsed.delta };
+        } else {
+          content.push({ type: 'thinking' as const, thinking: parsed.delta });
+        }
+        return { ...prev, content };
+      });
+    // Complete content blocks (legacy / fallback)
+    } else if (parsed.type === 'text' && parsed.text) {
+      setStatus('streaming');
+      setEntry((prev) => {
+        if (!prev) return prev;
+        // If deltas already built up text, replace last text block
+        const content = [...(prev.content || [])];
+        const lastIdx = content.length - 1;
+        if (lastIdx >= 0 && content[lastIdx].type === 'text') {
+          content[lastIdx] = { type: 'text' as const, text: parsed.text };
+          return { ...prev, content };
+        }
+        return { ...prev, content: [...content, { type: 'text' as const, text: parsed.text }] };
       });
     } else if (parsed.type === 'thinking' && parsed.thinking) {
       setStatus('streaming');
