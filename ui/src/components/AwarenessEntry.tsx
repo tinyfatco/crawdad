@@ -93,7 +93,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
       <div className="awareness-entry user-entry">
         <div className="awareness-meta">
           {entry.channel && <ChannelBadge channel={entry.channel} />}
-          {entry.userName && <span className="awareness-username">{entry.userName}</span>}
+          {entry.userName && <span className="awareness-username">{(entry.channel === 'web' && (entry.userName === 'user' || entry.userName === 'web-user')) ? 'you' : entry.userName}</span>}
         </div>
         <div className="awareness-user-text">{entry.strippedText || extractText(entry.content)}</div>
       </div>

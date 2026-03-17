@@ -51,7 +51,7 @@ export function useWebChat(): UseWebChatReturn {
       role: 'user',
       content: [{ type: 'text', text }],
       channel: 'web',
-      userName: 'you',
+      userName: 'user',
       strippedText: text,
     };
 
