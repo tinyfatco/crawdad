@@ -12,7 +12,7 @@ import {
 	SessionManager,
 	type Skill,
 } from "@mariozechner/pi-coding-agent";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
 import { mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import type { ChannelInfo, MomContext, UserInfo } from "./adapters/types.js";
@@ -70,10 +70,32 @@ function getMemory(workspaceDir: string): string {
 	return "(no working memory yet)";
 }
 
-function loadMomSkills(awarenessDir: string, workspacePath: string, extraSkillsDirs: string[] = []): Skill[] {
-	const skillMap = new Map<string, Skill>();
+// Skills cache — skills rarely change, no need to re-scan R2/FUSE on every message
+const skillsCache = new Map<string, { skills: Skill[]; workspaceMtime: number }>();
 
+function getWorkspaceSkillsMtime(dir: string): number {
+	try {
+		return statSync(dir).mtimeMs;
+	} catch {
+		return 0;
+	}
+}
+
+function loadMomSkills(awarenessDir: string, workspacePath: string, extraSkillsDirs: string[] = []): Skill[] {
 	const hostWorkspacePath = join(awarenessDir, "..");
+	const workspaceSkillsDir = join(hostWorkspacePath, "skills");
+
+	// Check cache — invalidate only if workspace skills dir mtime changed
+	const cached = skillsCache.get(awarenessDir);
+	if (cached) {
+		const currentMtime = getWorkspaceSkillsMtime(workspaceSkillsDir);
+		if (currentMtime === cached.workspaceMtime) {
+			return cached.skills;
+		}
+		log.logInfo(`[skills] Workspace skills changed, reloading`);
+	}
+
+	const skillMap = new Map<string, Skill>();
 
 	// Helper to translate host paths to container paths
 	const translatePath = (hostPath: string): string => {
@@ -91,14 +113,15 @@ function loadMomSkills(awarenessDir: string, workspacePath: string, extraSkillsD
 	}
 
 	// Load workspace-level skills (global) — overrides system skills on collision
-	const workspaceSkillsDir = join(hostWorkspacePath, "skills");
 	for (const skill of loadSkillsFromDir({ dir: workspaceSkillsDir, source: "workspace" }).skills) {
 		skill.filePath = translatePath(skill.filePath);
 		skill.baseDir = translatePath(skill.baseDir);
 		skillMap.set(skill.name, skill);
 	}
 
-	return Array.from(skillMap.values());
+	const skills = Array.from(skillMap.values());
+	skillsCache.set(awarenessDir, { skills, workspaceMtime: getWorkspaceSkillsMtime(workspaceSkillsDir) });
+	return skills;
 }
 
 function buildSystemPrompt(
