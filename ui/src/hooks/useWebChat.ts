@@ -139,17 +139,11 @@ export function useWebChat(): UseWebChatReturn {
         });
       }
     } finally {
-      setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
+      setUserEntry(null);
+      setStreamingEntry(null);
       setIsStreaming(false);
       setStatus('idle');
       abortControllerRef.current = null;
-
-      // Clear the optimistic entries after a short delay —
-      // by now the awareness stream should have the file-written versions
-      setTimeout(() => {
-        setUserEntry(null);
-        setStreamingEntry(null);
-      }, 2000);
     }
   }, []);
 
@@ -158,13 +152,10 @@ export function useWebChat(): UseWebChatReturn {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-    setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
+    setUserEntry(null);
+    setStreamingEntry(null);
     setIsStreaming(false);
     setStatus('idle');
-    setTimeout(() => {
-      setUserEntry(null);
-      setStreamingEntry(null);
-    }, 2000);
   }, []);
 
   const clearError = useCallback(() => {
