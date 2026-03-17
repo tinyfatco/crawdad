@@ -699,7 +699,8 @@ const styles = `
     gap: 0.5rem;
     color: var(--text);
     line-height: 1.7;
-    font-size: 1rem;
+    font-size: 0.75rem;
+    margin-left: 0.25rem;
   }
 
   .awareness-entry.assistant-entry .markdown-content p { margin-bottom: 0.5rem; }
