@@ -243,7 +243,7 @@ const styles = `
   .chat-messages {
     flex: 1;
     overflow-y: auto;
-    padding: 1rem;
+    padding: 1rem 0;
   }
 
   .chat-empty {
@@ -252,6 +252,7 @@ const styles = `
     justify-content: center;
     height: 100%;
     color: var(--text-muted);
+    padding: 0 1rem;
   }
 
   .chat-empty-text { font-size: 0.9rem; }
@@ -654,6 +655,7 @@ const styles = `
   /* Awareness entries */
   .awareness-entry {
     max-width: 100%;
+    padding: 0.25rem 1rem;
   }
 
   .awareness-entry.user-entry {
@@ -702,7 +704,7 @@ const styles = `
     font-size: 0.75rem;
     margin-left: 0.25rem;
     background: rgba(34, 139, 34, 0.06);
-    padding: 0.5rem 0.75rem;
+    padding: 0.5rem 1rem;
     border-radius: 0;
   }
 
