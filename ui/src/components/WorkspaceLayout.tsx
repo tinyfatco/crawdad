@@ -461,12 +461,11 @@ const styles = `
   .input-bar textarea {
     flex: 1;
     padding: 0.35rem 0.6rem;
-    font-size: 0.85rem;
+    font-size: 0.6rem;
     background: transparent;
     border: none;
     color: var(--text);
     font-family: var(--font-sans);
-    font-size: 16px;
     line-height: 1.5;
     resize: none;
     min-height: 30px;
@@ -705,10 +704,6 @@ const styles = `
     background: rgba(34, 139, 34, 0.06);
     padding: 0.5rem 0.75rem;
     border-radius: 0;
-    margin-left: -1rem;
-    margin-right: -1rem;
-    padding-left: 1rem;
-    padding-right: 1rem;
   }
 
   .awareness-entry.assistant-entry .markdown-content p { margin-bottom: 0.5rem; }
