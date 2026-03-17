@@ -710,6 +710,8 @@ const styles = `
 
   .awareness-entry.assistant-entry .markdown-content p { margin-bottom: 0.5rem; }
   .awareness-entry.assistant-entry .markdown-content p:last-child { margin-bottom: 0; }
+  .awareness-entry.assistant-entry ul,
+  .awareness-entry.assistant-entry ol { margin: 0.5rem 0; padding-left: 1.5rem; }
 
   .awareness-thinking {
     display: flex;
