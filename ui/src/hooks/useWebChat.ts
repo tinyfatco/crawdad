@@ -139,9 +139,10 @@ export function useWebChat(): UseWebChatReturn {
         });
       }
     } finally {
-      // Mark streaming done but keep entries visible —
-      // they'll be cleaned up when the awareness stream delivers the real versions
-      setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
+      // Clear streaming entries — the awareness stream will deliver the persisted versions.
+      // Keeping them causes a visible double-render before dedup kicks in.
+      setStreamingEntry(null);
+      setUserEntry(null);
       setIsStreaming(false);
       setStatus('idle');
       abortControllerRef.current = null;
@@ -224,7 +225,14 @@ function processEvent(
       setStatus('streaming');
       setEntry((prev) => {
         if (!prev) return prev;
-        return { ...prev, content: [...(prev.content || []), { type: 'thinking' as const, thinking: parsed.thinking }] };
+        // If deltas already built up thinking, replace last thinking block
+        const content = [...(prev.content || [])];
+        const lastThinkingIdx = content.map((c, i) => c.type === 'thinking' ? i : -1).filter(i => i >= 0).pop();
+        if (lastThinkingIdx !== undefined && lastThinkingIdx >= 0) {
+          content[lastThinkingIdx] = { type: 'thinking' as const, thinking: parsed.thinking };
+          return { ...prev, content };
+        }
+        return { ...prev, content: [...content, { type: 'thinking' as const, thinking: parsed.thinking }] };
       });
     } else if (parsed.type === 'toolCall') {
       setStatus('tool_running');
