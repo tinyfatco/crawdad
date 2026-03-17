@@ -441,7 +441,7 @@ const styles = `
 
   /* Input bar */
   .input-bar {
-    padding: 0.75rem 1rem 1rem;
+    padding: 0.5rem 0.75rem;
     width: 100%;
   }
 
@@ -460,7 +460,8 @@ const styles = `
 
   .input-bar textarea {
     flex: 1;
-    padding: 0.5rem 0.75rem;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.85rem;
     background: transparent;
     border: none;
     color: var(--text);
@@ -468,7 +469,7 @@ const styles = `
     font-size: 16px;
     line-height: 1.5;
     resize: none;
-    min-height: 36px;
+    min-height: 30px;
     max-height: 180px;
   }
 
@@ -480,8 +481,8 @@ const styles = `
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 36px;
-    height: 36px;
+    width: 30px;
+    height: 30px;
     border: none;
     border-radius: 50%;
     cursor: pointer;
@@ -689,7 +690,7 @@ const styles = `
 
   .awareness-user-text {
     color: var(--text);
-    font-size: 0.95rem;
+    font-size: 0.75rem;
     line-height: 1.5;
   }
 
@@ -701,6 +702,9 @@ const styles = `
     line-height: 1.7;
     font-size: 0.75rem;
     margin-left: 0.25rem;
+    background: rgba(34, 139, 34, 0.06);
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
   }
 
   .awareness-entry.assistant-entry .markdown-content p { margin-bottom: 0.5rem; }
