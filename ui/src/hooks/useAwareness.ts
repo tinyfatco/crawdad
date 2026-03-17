@@ -50,6 +50,8 @@ export interface AwarenessEntry {
   /** Model info for assistant messages */
   model?: string;
   stopReason?: string;
+  /** True while SSE is actively streaming this entry */
+  isStreaming?: boolean;
 }
 
 /** Parse the [timestamp] [channel] [user]: text prefix from user messages */

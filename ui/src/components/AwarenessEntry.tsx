@@ -1,5 +1,5 @@
 import { memo, useState } from 'react';
-import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallContent } from '../hooks/useAwareness';
+import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallContent, ToolResultContent } from '../hooks/useAwareness';
 import { ChannelBadge } from './ChannelBadge';
 import { Markdown } from './Markdown';
 
@@ -7,7 +7,7 @@ interface AwarenessEntryProps {
   entry: AwarenessEntryType;
 }
 
-function ToolCallBlock({ block }: { block: ToolCallContent }) {
+function ToolCallBlock({ block, isRunning, result }: { block: ToolCallContent; isRunning?: boolean; result?: ToolResultContent }) {
   const [expanded, setExpanded] = useState(false);
   const args = block.arguments || {};
   const summary = args.command
@@ -18,10 +18,16 @@ function ToolCallBlock({ block }: { block: ToolCallContent }) {
         ? String(args.pattern)
         : null;
 
+  const statusIcon = isRunning
+    ? <span className="tool-spinner" />
+    : result?.isError
+      ? <span className="tool-status-icon error">!</span>
+      : <span className="tool-status-icon success">-</span>;
+
   return (
-    <div className="tool-call">
+    <div className={`tool-call ${isRunning ? 'running' : ''} ${result?.isError ? 'error' : ''}`}>
       <button className="tool-header" onClick={() => setExpanded(!expanded)}>
-        <span className="tool-status-icon success">-</span>
+        {statusIcon}
         <span className="tool-name">{block.name}</span>
         {summary && <span className="tool-summary">{summary}</span>}
         <span className="tool-expand">{expanded ? '-' : '+'}</span>
@@ -32,6 +38,12 @@ function ToolCallBlock({ block }: { block: ToolCallContent }) {
             <span className="tool-detail-label">args</span>
             <pre className="tool-detail-pre">{JSON.stringify(args, null, 2)}</pre>
           </div>
+          {result?.result && (
+            <div className="tool-detail">
+              <span className="tool-detail-label">result</span>
+              <pre className="tool-detail-pre">{result.result}</pre>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -93,7 +105,16 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
     const thinkingBlocks = entry.content.filter((c) => c.type === 'thinking');
     const textBlocks = entry.content.filter((c) => c.type === 'text');
     const toolCallBlocks = entry.content.filter((c) => c.type === 'toolCall') as ToolCallContent[];
+    const toolResults = entry.content.filter((c) => c.type === 'toolResult') as ToolResultContent[];
     const hasText = textBlocks.some((c) => c.type === 'text' && c.text.trim());
+
+    // Match tool calls to their results
+    const getToolResult = (tc: ToolCallContent): ToolResultContent | undefined =>
+      toolResults.find((r) => r.toolCallId === tc.id);
+
+    // A tool is "running" if: entry is streaming AND the tool has no result yet
+    const isToolRunning = (tc: ToolCallContent): boolean =>
+      !!entry.isStreaming && !getToolResult(tc);
 
     return (
       <div className="awareness-entry assistant-entry">
@@ -106,8 +127,9 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
           ) : null,
         )}
         {toolCallBlocks.map((block, i) => (
-          <ToolCallBlock key={i} block={block} />
+          <ToolCallBlock key={i} block={block} isRunning={isToolRunning(block)} result={getToolResult(block)} />
         ))}
+        {entry.isStreaming && <span className="cursor" />}
       </div>
     );
   }
