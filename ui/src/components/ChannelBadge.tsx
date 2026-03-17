@@ -1,4 +1,4 @@
-import { formatChannel } from '../hooks/useAwareness';
+import { formatChannel } from '../types';
 
 const CHANNEL_COLORS: Record<string, string> = {
   slack: '#611BBD',

@@ -1,0 +1,234 @@
+/**
+ * useWebChat — SSE streaming for the active web chat turn.
+ *
+ * Sends messages via POST /web/chat and reads token-level SSE events.
+ * Returns a single in-progress AwarenessEntry that the ChatPane renders
+ * at the bottom of the awareness stream. When the turn completes,
+ * streamingEntry goes null — the completed entry arrives via the
+ * awareness stream (from context.jsonl).
+ */
+
+import { useState, useCallback, useRef } from 'react';
+import { apiUrl } from '../api';
+import type { AwarenessEntry, TextContent, ToolCallContent, ToolResultContent } from '../types';
+
+export type StreamStatus =
+  | 'idle'
+  | 'connecting'
+  | 'streaming'
+  | 'tool_running'
+  | 'error';
+
+export interface UseWebChatReturn {
+  /** The user's message, shown optimistically while streaming */
+  userEntry: AwarenessEntry | null;
+  /** The assistant's in-progress response */
+  streamingEntry: AwarenessEntry | null;
+  isStreaming: boolean;
+  status: StreamStatus;
+  error: string | null;
+  sendMessage: (text: string) => void;
+  abortStream: () => void;
+  clearError: () => void;
+}
+
+export function useWebChat(): UseWebChatReturn {
+  const [userEntry, setUserEntry] = useState<AwarenessEntry | null>(null);
+  const [streamingEntry, setStreamingEntry] = useState<AwarenessEntry | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [status, setStatus] = useState<StreamStatus>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const sendMessage = useCallback(async (text: string) => {
+    const now = new Date().toISOString();
+
+    // Optimistic user entry
+    const user: AwarenessEntry = {
+      id: `live-user-${Date.now()}`,
+      type: 'message',
+      timestamp: now,
+      role: 'user',
+      content: [{ type: 'text', text }],
+      channel: 'web',
+      userName: 'you',
+      strippedText: text,
+    };
+
+    // Empty assistant entry — filled by SSE tokens
+    const assistant: AwarenessEntry = {
+      id: `live-assistant-${Date.now()}`,
+      type: 'message',
+      timestamp: now,
+      role: 'assistant',
+      content: [],
+      isStreaming: true,
+    };
+
+    setUserEntry(user);
+    setStreamingEntry(assistant);
+    setIsStreaming(true);
+    setStatus('connecting');
+    setError(null);
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    try {
+      // Retry loop for cold starts
+      let response: Response | null = null;
+      for (let attempt = 1; attempt <= 30; attempt++) {
+        response = await fetch(apiUrl('/web/chat'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text }),
+          signal: controller.signal,
+        });
+        if (response.status === 503) {
+          setStatus('connecting');
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+        break;
+      }
+
+      if (!response || !response.ok) {
+        const errText = response ? await response.text() : 'No response';
+        throw new Error(errText || `HTTP ${response?.status}`);
+      }
+
+      if (!response.body) throw new Error('No response body');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6);
+          if (data === '[DONE]') continue;
+          processEvent(data, setStreamingEntry, setStatus, setError);
+        }
+      }
+
+      if (buffer.startsWith('data: ')) {
+        const remaining = buffer.slice(6);
+        if (remaining !== '[DONE]') {
+          processEvent(remaining, setStreamingEntry, setStatus, setError);
+        }
+      }
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        // User cancelled
+      } else {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        setError(msg);
+        setStreamingEntry((prev) => {
+          if (!prev) return null;
+          const hasContent = prev.content?.some((c) => c.type === 'text' && c.text.trim());
+          if (hasContent) return { ...prev, isStreaming: false };
+          return { ...prev, content: [{ type: 'text', text: 'Failed to get response.' }], isStreaming: false };
+        });
+      }
+    } finally {
+      setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
+      setIsStreaming(false);
+      setStatus('idle');
+      abortControllerRef.current = null;
+
+      // Clear the optimistic entries after a short delay —
+      // by now the awareness stream should have the file-written versions
+      setTimeout(() => {
+        setUserEntry(null);
+        setStreamingEntry(null);
+      }, 2000);
+    }
+  }, []);
+
+  const abortStream = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
+    setIsStreaming(false);
+    setStatus('idle');
+    setTimeout(() => {
+      setUserEntry(null);
+      setStreamingEntry(null);
+    }, 2000);
+  }, []);
+
+  const clearError = useCallback(() => {
+    setError(null);
+    setStatus('idle');
+  }, []);
+
+  return { userEntry, streamingEntry, isStreaming, status, error, sendMessage, abortStream, clearError };
+}
+
+// ============================================================================
+// SSE event → update streaming AwarenessEntry
+// ============================================================================
+
+function processEvent(
+  data: string,
+  setEntry: React.Dispatch<React.SetStateAction<AwarenessEntry | null>>,
+  setStatus: (s: StreamStatus) => void,
+  setError: (e: string | null) => void,
+): void {
+  try {
+    const parsed = JSON.parse(data);
+
+    if (parsed.type === 'token' && parsed.text) {
+      setStatus('streaming');
+      setEntry((prev) => {
+        if (!prev) return prev;
+        const content = [...(prev.content || [])];
+        const last = content[content.length - 1];
+        if (last && last.type === 'text') {
+          content[content.length - 1] = { ...last, text: (last as TextContent).text + parsed.text };
+        } else {
+          content.push({ type: 'text', text: parsed.text });
+        }
+        return { ...prev, content };
+      });
+    } else if (parsed.type === 'tool_start') {
+      setStatus('tool_running');
+      const toolBlock: ToolCallContent = {
+        type: 'toolCall',
+        id: parsed.toolCallId || `tool-${Date.now()}`,
+        name: parsed.toolName || parsed.name,
+        arguments: parsed.args || {},
+      };
+      setEntry((prev) => {
+        if (!prev) return prev;
+        return { ...prev, content: [...(prev.content || []), toolBlock] };
+      });
+    } else if (parsed.type === 'tool_end') {
+      setStatus('streaming');
+      const result: ToolResultContent = {
+        type: 'toolResult',
+        toolCallId: parsed.toolCallId || '',
+        result: parsed.resultPreview || parsed.preview || '',
+        isError: parsed.isError,
+      };
+      setEntry((prev) => {
+        if (!prev) return prev;
+        return { ...prev, content: [...(prev.content || []), result] };
+      });
+    } else if (parsed.type === 'error') {
+      setError(parsed.message || 'Stream error');
+    }
+  } catch {
+    // Non-JSON — skip
+  }
+}

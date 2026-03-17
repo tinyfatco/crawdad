@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
-import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync } from "fs";
 import { join, extname, resolve, normalize } from "path";
 import * as log from "./log.js";
 
@@ -38,6 +38,10 @@ export class Gateway {
 	private server: Server | null = null;
 	private uiDir: string | null = null;
 	private workspaceDir: string | null = null;
+	/** Connected SSE clients for /awareness/stream */
+	private awarenessClients = new Set<ServerResponse>();
+	private awarenessWatcher: ReturnType<typeof setInterval> | null = null;
+	private awarenessFileSize = 0;
 
 	constructor(options: GatewayOptions = {}) {
 		if (options.uiDir && existsSync(options.uiDir)) {
@@ -192,6 +196,95 @@ export class Gateway {
 		}
 	}
 
+	/** Handle GET /awareness/stream — SSE endpoint that tails context.jsonl */
+	private handleAwarenessStream(_req: IncomingMessage, res: ServerResponse): void {
+		if (!this.workspaceDir) {
+			res.writeHead(500);
+			res.end("No workspace configured");
+			return;
+		}
+
+		const contextFile = resolve(this.workspaceDir, "awareness/context.jsonl");
+
+		// SSE headers
+		res.writeHead(200, {
+			"Content-Type": "text/event-stream",
+			"Cache-Control": "no-cache",
+			"Connection": "keep-alive",
+		});
+
+		// Send backlog — every existing line as an event
+		let currentSize = 0;
+		try {
+			const content = readFileSync(contextFile, "utf-8");
+			currentSize = Buffer.byteLength(content, "utf-8");
+			const lines = content.split("\n").filter(Boolean);
+			for (const line of lines) {
+				res.write(`data: ${line}\n\n`);
+			}
+		} catch {
+			// File doesn't exist yet — that's OK, we'll pick it up when it's created
+		}
+
+		// Track this client's file offset
+		let clientOffset = currentSize;
+
+		// Register client
+		this.awarenessClients.add(res);
+
+		// Start the shared file watcher if not already running
+		if (!this.awarenessWatcher) {
+			this.awarenessFileSize = currentSize;
+			this.startAwarenessWatcher(contextFile);
+		}
+
+		// Heartbeat to keep connection alive
+		const heartbeat = setInterval(() => {
+			try { res.write(": heartbeat\n\n"); } catch { /* client gone */ }
+		}, 15000);
+
+		// Clean up on disconnect
+		res.on("close", () => {
+			clearInterval(heartbeat);
+			this.awarenessClients.delete(res);
+			if (this.awarenessClients.size === 0 && this.awarenessWatcher) {
+				clearInterval(this.awarenessWatcher);
+				this.awarenessWatcher = null;
+			}
+		});
+	}
+
+	/** Poll context.jsonl for new bytes and push to all connected SSE clients */
+	private startAwarenessWatcher(contextFile: string): void {
+		this.awarenessWatcher = setInterval(() => {
+			try {
+				const stat = statSync(contextFile);
+				const newSize = stat.size;
+				if (newSize <= this.awarenessFileSize) return;
+
+				// Read only the new bytes
+				const fd = openSync(contextFile, "r");
+				const buf = Buffer.alloc(newSize - this.awarenessFileSize);
+				readSync(fd, buf, 0, buf.length, this.awarenessFileSize);
+				closeSync(fd);
+
+				this.awarenessFileSize = newSize;
+
+				const newContent = buf.toString("utf-8");
+				const lines = newContent.split("\n").filter(Boolean);
+
+				for (const line of lines) {
+					const event = `data: ${line}\n\n`;
+					for (const client of this.awarenessClients) {
+						try { client.write(event); } catch { /* client gone, will be cleaned up */ }
+					}
+				}
+			} catch {
+				// File gone or read error — skip this tick
+			}
+		}, 500);
+	}
+
 	/** Start listening on the given port */
 	async start(port: number): Promise<void> {
 		this.server = createServer((req, res) => {
@@ -222,6 +315,12 @@ export class Gateway {
 
 			if (req.method === "GET" && urlPath === "/api/file") {
 				this.handleFileApi(req, res);
+				return;
+			}
+
+			// Awareness stream — SSE endpoint
+			if (req.method === "GET" && urlPath === "/awareness/stream") {
+				this.handleAwarenessStream(req, res);
 				return;
 			}
 

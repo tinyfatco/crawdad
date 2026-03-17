@@ -1,26 +1,29 @@
 import { useRef, useEffect, useCallback } from 'react';
 import { useAwarenessStream } from '../hooks/useAwarenessStream';
+import { useWebChat } from '../hooks/useWebChat';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { InputBar } from './InputBar';
 
 export function ChatPane() {
+  const { entries, isLoading, error: streamError } = useAwarenessStream();
   const {
-    entries,
-    isLoading,
+    userEntry,
+    streamingEntry,
     isStreaming,
-    error,
+    error: chatError,
     sendMessage,
     abortStream,
     clearError,
-  } = useAwarenessStream();
+  } = useWebChat();
 
+  const error = chatError || streamError;
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
-  useEffect(scrollToBottom, [entries, scrollToBottom]);
+  useEffect(scrollToBottom, [entries, streamingEntry, scrollToBottom]);
 
   return (
     <div className="chat-pane">
@@ -29,7 +32,7 @@ export function ChatPane() {
           <div className="chat-empty">
             <p className="chat-empty-text">Loading awareness...</p>
           </div>
-        ) : entries.length === 0 ? (
+        ) : entries.length === 0 && !userEntry && !streamingEntry ? (
           <div className="chat-empty">
             <p className="chat-empty-text">Send a message to get started.</p>
           </div>
@@ -38,6 +41,8 @@ export function ChatPane() {
             {entries.map((entry) => (
               <AwarenessEntryComponent key={entry.id} entry={entry} />
             ))}
+            {userEntry && <AwarenessEntryComponent key={userEntry.id} entry={userEntry} />}
+            {streamingEntry && <AwarenessEntryComponent key={streamingEntry.id} entry={streamingEntry} />}
           </div>
         )}
         <div ref={messagesEndRef} />
