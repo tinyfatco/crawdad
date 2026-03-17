@@ -207,33 +207,12 @@ function processEvent(
         }
         return { ...prev, content };
       });
-    // Complete content blocks (legacy / fallback)
+    // Complete text/thinking blocks — ignored, deltas handle streaming,
+    // awareness stream handles persistence
     } else if (parsed.type === 'text' && parsed.text) {
-      setStatus('streaming');
-      setEntry((prev) => {
-        if (!prev) return prev;
-        // If deltas already built up text, replace last text block
-        const content = [...(prev.content || [])];
-        const lastIdx = content.length - 1;
-        if (lastIdx >= 0 && content[lastIdx].type === 'text') {
-          content[lastIdx] = { type: 'text' as const, text: parsed.text };
-          return { ...prev, content };
-        }
-        return { ...prev, content: [...content, { type: 'text' as const, text: parsed.text }] };
-      });
+      // no-op — deltas already built this up
     } else if (parsed.type === 'thinking' && parsed.thinking) {
-      setStatus('streaming');
-      setEntry((prev) => {
-        if (!prev) return prev;
-        // If deltas already built up thinking, replace last thinking block
-        const content = [...(prev.content || [])];
-        const lastThinkingIdx = content.map((c, i) => c.type === 'thinking' ? i : -1).filter(i => i >= 0).pop();
-        if (lastThinkingIdx !== undefined && lastThinkingIdx >= 0) {
-          content[lastThinkingIdx] = { type: 'thinking' as const, thinking: parsed.thinking };
-          return { ...prev, content };
-        }
-        return { ...prev, content: [...content, { type: 'thinking' as const, thinking: parsed.thinking }] };
-      });
+      // no-op — deltas already built this up
     } else if (parsed.type === 'toolCall') {
       setStatus('tool_running');
       setEntry((prev) => {

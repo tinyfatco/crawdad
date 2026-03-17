@@ -645,7 +645,7 @@ function createRunner(
 
 				for (const thinking of thinkingParts) {
 					log.logThinking(logCtx, thinking);
-					ctx.emitContentBlock?.({ type: "thinking", thinking });
+					// No emitContentBlock — deltas already streamed to web, awareness stream handles persistence
 					const lines = thinking.trim().split("\n").map((l: string) => l.trim()).filter(Boolean);
 					const formatted = "💭 " + lines.map((l: string) => `_${l}_`).join("\n");
 					queue.enqueueMessage(formatted, "main", "thinking main");
@@ -654,7 +654,7 @@ function createRunner(
 
 				if (text.trim()) {
 					log.logResponse(logCtx, text);
-					ctx.emitContentBlock?.({ type: "text", text });
+					// No emitContentBlock — deltas already streamed to web, awareness stream handles persistence
 					queue.enqueueMessage(text, "main", "response main");
 					queue.enqueueMessage(text, "thread", "response thread", false);
 				}
