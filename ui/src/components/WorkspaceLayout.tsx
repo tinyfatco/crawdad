@@ -704,7 +704,11 @@ const styles = `
     margin-left: 0.25rem;
     background: rgba(34, 139, 34, 0.06);
     padding: 0.5rem 0.75rem;
-    border-radius: 6px;
+    border-radius: 0;
+    margin-left: -1rem;
+    margin-right: -1rem;
+    padding-left: 1rem;
+    padding-right: 1rem;
   }
 
   .awareness-entry.assistant-entry .markdown-content p { margin-bottom: 0.5rem; }
