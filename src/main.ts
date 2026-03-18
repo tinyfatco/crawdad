@@ -412,14 +412,15 @@ const handler: MomHandler = {
 	},
 
 	async handleEvent(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<void> {
+		// Ensure awareness is initialized (needed for /context and other commands)
+		const state = getAwareness(event.channel, platform, platform.formatInstructions);
+
 		// Intercept slash commands before spinning up the agent
 		const trimmed = event.text.trim();
 		if (trimmed.startsWith("/") && !isEvent) {
-			const handled = await handleSlashCommand(trimmed, event.channel, workingDir, platform, awareness?.runner);
+			const handled = await handleSlashCommand(trimmed, event.channel, workingDir, platform, state.runner);
 			if (handled) return;
 		}
-
-		const state = getAwareness(event.channel, platform, platform.formatInstructions);
 
 		// Start run
 		state.running = true;
