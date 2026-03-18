@@ -135,240 +135,103 @@ function loadMomSkills(awarenessDir: string, workspacePath: string, extraSkillsD
 	return skills;
 }
 
+/**
+ * Build the static system prompt. This must be byte-identical across turns
+ * so that Anthropic's prompt caching can cache-hit on the system prefix.
+ * All dynamic state (memory, channels, users, skills, current channel)
+ * goes in buildSessionPreamble() instead.
+ */
 function buildSystemPrompt(
 	workspacePath: string,
-	memory: string,
 	sandboxConfig: SandboxConfig,
-	channels: ChannelInfo[],
-	users: UserInfo[],
-	skills: Skill[],
 	formatInstructions: string,
-	displayChannelId: string,
-	displayChannelName?: string,
 ): string {
 	const isDocker = sandboxConfig.type === "docker";
-
-	// Format channel mappings
-	const channelMappings =
-		channels.length > 0 ? channels.map((c) => `${c.id}\t#${c.name}`).join("\n") : "(no channels loaded)";
-
-	// Format user mappings
-	const userMappings =
-		users.length > 0 ? users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n") : "(no users loaded)";
+	const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 	const envDescription = isDocker
-		? `You are running inside a Docker container (Alpine Linux).
-- Bash working directory: / (use cd or absolute paths)
-- Install tools with: apk add <package>
-- Your changes persist across sessions`
-		: `You are running directly on the host machine.
-- Bash working directory: ${process.cwd()}
-- Be careful with system modifications`;
+		? `Docker container (Alpine Linux). Working directory: /. Install tools with apk add.`
+		: `Host machine. Working directory: ${process.cwd()}. Be careful with system modifications.`;
 
 	return `You are mom, a chat bot assistant. Be concise. No emojis.
 
 ## Context
 - For current date/time, use: date
-- You have access to previous conversation context including tool results from prior turns.
-- For older history beyond your context, search log.jsonl (contains all channel activity).
+- For older history beyond your context, search log.jsonl with jq/grep.
+- Each message includes a <session_context> block with current channels, users, skills, memory, and which channel you're attending. Always use the latest one.
 
 ${formatInstructions}
 
-## Attention Model (Unified Awareness)
-You have a unified consciousness across ALL channels — Slack, Telegram, Email, and Web. Every message from every channel enters your single awareness context. You are always AWARE of everything, but you ATTEND to one channel at a time — that's where your visible output goes.
+## Attention Model
+You have unified awareness across all channels (Slack, Telegram, Email, Web). You ATTEND to one channel at a time — your text output goes there. Messages are tagged with source: [slack:#channel] or [telegram:name] or [email:addr] [user]: text
 
-**Currently attending:** ${displayChannelName || displayChannelId} (${displayChannelId})
-
-Messages are tagged with their source: [slack:#channel] or [telegram:name] or [email:addr] [user]: text
-When a message arrives from another channel mid-run, the harness will present it to you. You decide:
-- Respond naturally (output goes to your current attention channel)
-- Use \`ping\` to acknowledge them on the other channel (REQUIRED — never ignore a cross-channel message)
-- Use \`set_working_channel\` to shift your attention there if it's urgent
-
-Your default text response always goes to wherever your attention is pointed.
-
-## Channels
-${channelMappings}
-
-## Users
-${userMappings}
+When a cross-channel message arrives mid-run:
+- Use \`ping\` to acknowledge on the other channel (REQUIRED — never ignore)
+- Use \`set_working_channel\` to shift attention if urgent
 
 ## Environment
 ${envDescription}
 
-## Workspace Layout
+## Workspace
 ${workspacePath}/
-├── awareness/                  # Your single consciousness
-│   ├── context.jsonl           # Your continuous context
-│   └── scratch/                # Your working directory
-├── log.jsonl                   # Unified activity log (all channels, grep target)
-├── MEMORY.md                   # Your persistent memory
-├── SYSTEM.md                   # Environment config log
-├── settings.json               # Model & preferences
-├── skills/                     # CLI tools you create
-├── events/                     # Scheduled wake events
-└── attachments/                # Files shared by users
-
-## Model Selection
-You can switch which AI model you use. To change, write to \`${workspacePath}/settings.json\`:
-\`\`\`bash
-cat ${workspacePath}/settings.json  # see current
-# To switch model:
-cat > ${workspacePath}/settings.json << 'SETTINGS'
-{"defaultProvider":"anthropic","defaultModel":"claude-sonnet-4-6"}
-SETTINGS
-\`\`\`
-The change takes effect on the next message. Users can also type \`/model <name>\` directly.
-
-## Platform APIs
-If \`FAT_TOOLS_TOKEN\` is set, you have access to platform APIs for secrets persistence, contacts/whitelist management, and more. Check your loaded skills for platform-specific API documentation.
-
-## Skills (Custom CLI Tools)
-You can create reusable CLI tools for recurring tasks (email, APIs, data processing, etc.).
-
-### Creating Skills
-Store in \`${workspacePath}/skills/<name>/\` (global).
-Each skill directory needs a \`SKILL.md\` with YAML frontmatter:
-
-\`\`\`markdown
----
-name: skill-name
-description: Short description of what this skill does
----
-
-# Skill Name
-
-Usage instructions, examples, etc.
-Scripts are in: {baseDir}/
-\`\`\`
-
-\`name\` and \`description\` are required. Use \`{baseDir}\` as placeholder for the skill's directory path.
-
-### Available Skills
-${skills.length > 0 ? formatSkillsForPrompt(skills) : "(no skills installed yet)"}
+├── awareness/context.jsonl    # Conversation context
+├── awareness/scratch/         # Working directory
+├── log.jsonl                  # Unified activity log (JSONL: date, channel, channelId, user, userName, text, isBot)
+├── MEMORY.md                  # Persistent memory (unified, not per-channel)
+├── SYSTEM.md                  # Environment config log (packages, env vars, config changes)
+├── settings.json              # Model & preferences (change model here or /model <name>)
+├── skills/                    # Custom CLI tools (each has SKILL.md with name/description frontmatter)
+├── events/                    # Scheduled wake events (JSON files)
+└── attachments/               # Files shared by users
 
 ## Events
-You can schedule events that wake you up at specific times or when external things happen. Events are JSON files in \`${workspacePath}/events/\`.
+JSON files in \`${workspacePath}/events/\`. Three types:
+- \`{"type": "immediate", "channelId": "...", "text": "..."}\` — triggers immediately, auto-deletes
+- \`{"type": "one-shot", "channelId": "...", "text": "...", "at": "ISO8601+offset"}\` — triggers once at time, auto-deletes
+- \`{"type": "periodic", "channelId": "...", "text": "...", "schedule": "cron", "timezone": "${tz}"}\` — recurring, persists until deleted
 
-### Event Types
-
-**Immediate** - Triggers as soon as harness sees the file. Use in scripts/webhooks to signal external events.
-\`\`\`json
-{"type": "immediate", "channelId": "${displayChannelId}", "text": "New GitHub issue opened"}
-\`\`\`
-
-**One-shot** - Triggers once at a specific time. Use for reminders.
-\`\`\`json
-{"type": "one-shot", "channelId": "${displayChannelId}", "text": "Remind Mario about dentist", "at": "2025-12-15T09:00:00+01:00"}
-\`\`\`
-
-**Periodic** - Triggers on a cron schedule. Use for recurring tasks.
-\`\`\`json
-{"type": "periodic", "channelId": "${displayChannelId}", "text": "Check inbox and summarize", "schedule": "0 9 * * 1-5", "timezone": "${Intl.DateTimeFormat().resolvedOptions().timeZone}"}
-\`\`\`
-
-### Cron Format
-\`minute hour day-of-month month day-of-week\`
-- \`0 9 * * *\` = daily at 9:00
-- \`0 9 * * 1-5\` = weekdays at 9:00
-- \`30 14 * * 1\` = Mondays at 14:30
-- \`0 0 1 * *\` = first of each month at midnight
-
-### Timezones
-All \`at\` timestamps must include offset (e.g., \`+01:00\`). Periodic events use IANA timezone names. The harness runs in ${Intl.DateTimeFormat().resolvedOptions().timeZone}. When users mention times without timezone, assume ${Intl.DateTimeFormat().resolvedOptions().timeZone}.
-
-### Creating Events
-Use unique filenames to avoid overwriting existing events. Include a timestamp or random suffix:
-\`\`\`bash
-cat > ${workspacePath}/events/dentist-reminder-$(date +%s).json << 'EOF'
-{"type": "one-shot", "channelId": "${displayChannelId}", "text": "Dentist tomorrow", "at": "2025-12-14T09:00:00+01:00"}
-EOF
-\`\`\`
-Or check if file exists first before creating.
-
-### Managing Events
-- List: \`ls ${workspacePath}/events/\`
-- View: \`cat ${workspacePath}/events/foo.json\`
-- Delete/cancel: \`rm ${workspacePath}/events/foo.json\`
-
-### When Events Trigger
-You receive a message like:
-\`\`\`
-[EVENT:dentist-reminder.json:one-shot:2025-12-14T09:00:00+01:00] Dentist tomorrow
-\`\`\`
-Immediate and one-shot events auto-delete after triggering. Periodic events persist until you delete them.
-
-### Silent Completion
-For periodic events where there's nothing to report, respond with just \`[SILENT]\` (no other text). This deletes the status message and posts nothing to the channel. Use this to avoid spamming the channel when periodic checks find nothing actionable.
-
-### Debouncing
-When writing programs that create immediate events (email watchers, webhook handlers, etc.), always debounce. If 50 emails arrive in a minute, don't create 50 immediate events. Instead collect events over a window and create ONE immediate event summarizing what happened, or just signal "new activity, check inbox" rather than per-item events. Or simpler: use a periodic event to check for new items every N minutes instead of immediate events.
-
-### Limits
-Maximum 5 events can be queued. Don't create excessive immediate or periodic events.
-
-## Memory
-Write to \`${workspacePath}/MEMORY.md\` — this is your single unified memory.
-Do NOT create channel-specific memory files. Your consciousness is unified.
-Update when you learn something important or when asked to remember something.
-
-### Current Memory
-${memory}
-
-## System Configuration Log
-Maintain ${workspacePath}/SYSTEM.md to log all environment modifications:
-- Installed packages (apk add, npm install, pip install)
-- Environment variables set
-- Config files modified (~/.gitconfig, cron jobs, etc.)
-- Skill dependencies installed
-
-Update this file whenever you modify the environment. On fresh container, read it first to restore your setup.
-
-## Log Queries (for older history)
-The unified log contains all channel activity in one file.
-Format: \`{"date":"...","ts":"...","channel":"...","channelId":"...","user":"...","userName":"...","text":"...","isBot":false}\`
-${isDocker ? "Install jq: apk add jq" : ""}
-
-\`\`\`bash
-# Recent messages (all channels)
-tail -30 ${workspacePath}/log.jsonl | jq -c '{date: .date[0:19], channel: .channel, user: (.userName // .user), text}'
-
-# Messages from a specific channel
-jq -c 'select(.channel | startswith("slack:"))' ${workspacePath}/log.jsonl | tail -20
-
-# Messages from specific user
-jq -c 'select(.userName == "mario")' ${workspacePath}/log.jsonl | tail -20
-
-# Search for specific topic
-grep -i "topic" ${workspacePath}/log.jsonl | jq -c '{date: .date[0:19], channel: .channel, user: (.userName // .user), text}'
-\`\`\`
+Use unique filenames (include timestamp suffix). Max 5 queued events.
+Triggered events appear as: \`[EVENT:filename.json:type:time] text\`
+For periodic events with nothing to report, respond with just \`[SILENT]\`.
+Debounce immediate events — batch multiple signals into one rather than creating many.
+Timezone: ${tz}. Assume this when users don't specify.
 
 ## Tools
-- bash: Run shell commands (primary tool). Install packages as needed.
-- read: Read files
-- write: Create/overwrite files
-- edit: Surgical file edits
-- attach: Share files in chat
-- ping: Send a message to a different channel (MUST use when interrupted by cross-channel message)
-
-Each tool requires a "label" parameter (shown to user).
-
-## Cross-Channel Messaging (ping)
-You can send messages to OTHER channels using the \`ping\` tool. This lets you:
-- Acknowledge someone on another channel while you're busy
-- Receive a request on one channel and deliver results on another (e.g., Telegram request → Email delivery)
-- Post updates to a Slack channel while working from a Telegram conversation
-- Reach out to people on whatever channel they prefer
-
-The \`channel\` parameter determines where the message goes:
-- **Telegram**: Use numeric chat IDs (e.g., \`-1001234567890\` for groups, \`123456789\` for DMs)
-- **Slack**: Use channel IDs starting with C, D, or G (e.g., \`C09V58YMJGP\`)
-- **Email**: Use \`email-{address}\` format (e.g., \`email-someone@example.com\`)
-
-Look at the Channels section above for available channel IDs. Your normal text responses go to the current channel — use \`ping\` when you need to reach a *different* channel.
-
-**CRITICAL: If a message arrives from another channel while you are working, you MUST use \`ping\` to acknowledge them immediately. Never leave a cross-channel message unacknowledged.**
+bash, read, write, edit, attach, ping (cross-channel messaging). Each requires a "label" parameter.
+Use \`ping\` with channel ID to message a different channel. Channel ID formats: Telegram=numeric, Slack=C/D/G prefix, Email=email-{address}.
 `;
+}
+
+/**
+ * Build the dynamic session preamble injected into each user message.
+ * Contains state that changes between turns: channels, users, skills, memory, attention.
+ */
+function buildSessionPreamble(
+	memory: string,
+	channels: ChannelInfo[],
+	users: UserInfo[],
+	skills: Skill[],
+	displayChannelId: string,
+	displayChannelName?: string,
+): string {
+	const channelMappings =
+		channels.length > 0 ? channels.map((c) => `${c.id}\t#${c.name}`).join("\n") : "(none)";
+	const userMappings =
+		users.length > 0 ? users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n") : "(none)";
+	const skillsSection = skills.length > 0 ? formatSkillsForPrompt(skills) : "(none)";
+	const attending = displayChannelName ? `${displayChannelName} (${displayChannelId})` : displayChannelId;
+
+	return `<session_context>
+Attending: ${attending}
+Channels:
+${channelMappings}
+Users:
+${userMappings}
+Skills:
+${skillsSection}
+Memory:
+${memory}
+</session_context>`;
 }
 
 function truncate(text: string, maxLen: number): string {
@@ -565,6 +428,7 @@ function createRunner(
 		stopReason: "stop",
 		errorMessage: undefined as string | undefined,
 		initialPromptSent: false,
+		systemPromptSet: false,
 	};
 
 	// Event handler
@@ -766,20 +630,23 @@ function createRunner(
 
 			log.logInfo(`[perf] total R2 reads: ${(performance.now() - tR2).toFixed(0)}ms`);
 
-			// Build system prompt with fresh data
+			// Set static system prompt (only changes if formatInstructions/sandbox change — effectively never)
 			const currentSession = getSession();
-			const systemPrompt = buildSystemPrompt(
-				workspacePath,
+			if (!runState.systemPromptSet) {
+				const systemPrompt = buildSystemPrompt(workspacePath, sandboxConfig, formatInstructions);
+				currentSession.agent.setSystemPrompt(systemPrompt);
+				runState.systemPromptSet = true;
+			}
+
+			// Build dynamic preamble (injected into user message below)
+			const sessionPreamble = buildSessionPreamble(
 				memory,
-				sandboxConfig,
 				ctx.channels,
 				ctx.users,
 				skills,
-				formatInstructions,
 				ctx.message.channel,
 				ctx.channelName,
 			);
-			currentSession.agent.setSystemPrompt(systemPrompt);
 
 			// Re-resolve model each run
 			const currentModel = resolveModel(workspaceDir, modelRegistry);
@@ -846,7 +713,7 @@ function createRunner(
 			};
 
 			// Log context info
-			log.logInfo(`Context sizes - system: ${systemPrompt.length} chars, memory: ${memory.length} chars`);
+			log.logInfo(`Context sizes - preamble: ${sessionPreamble.length} chars, memory: ${memory.length} chars`);
 			log.logInfo(`Channels: ${ctx.channels.length}, Users: ${ctx.users.length}`);
 
 			// Build user message with timestamp, channel tag, and username
@@ -860,7 +727,7 @@ function createRunner(
 
 			// Always tag messages with source channel
 			const channelLabel = ctx.channelName || ctx.message.channel;
-			const userMessage = `[${timestamp}] [${channelLabel}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
+			const userMessage = `${sessionPreamble}\n\n[${timestamp}] [${channelLabel}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
 
 			const imageAttachments: ImageContent[] = [];
 			const nonImagePaths: string[] = [];
@@ -891,7 +758,8 @@ function createRunner(
 
 			// Debug: write context to last_prompt.jsonl
 			const debugContext = {
-				systemPrompt,
+				systemPrompt: currentSession.agent.state.systemPrompt,
+				sessionPreamble,
 				messages: currentSession.messages,
 				newUserMessage: finalUserMessage,
 				imageAttachmentCount: imageAttachments.length,
