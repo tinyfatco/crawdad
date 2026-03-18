@@ -15,7 +15,7 @@ import { join } from "path";
 import * as log from "./log.js";
 
 const DEFAULT_PROVIDER = "anthropic";
-const DEFAULT_MODEL_ID = "claude-sonnet-4-5";
+const DEFAULT_MODEL_ID = "claude-sonnet-4-6";
 
 /**
  * Friendly aliases for Fireworks-backed models.
