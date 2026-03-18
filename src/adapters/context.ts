@@ -252,11 +252,9 @@ export function createTwoMessageContext(
 						editTimer = null;
 					}
 
-					// If nothing accumulated, delete the working message (clean UX)
-					if (workingEntries.length === 0 && workingMessageId) {
-						await ops.delete(event.channel, workingMessageId);
-						workingMessageId = null;
-					} else if (workingMessageId) {
+					// Finalize working message — never delete, because on Slack
+					// thread replies become orphaned tombstones if parent is deleted
+					if (workingMessageId) {
 						await flushWorkingMessage();
 					}
 				}
@@ -291,9 +289,7 @@ export function createTwoMessageContext(
 					editTimer = null;
 				}
 				isWorking = false;
-				if (workingEntries.length === 0 && workingMessageId) {
-					await ops.delete(event.channel, workingMessageId);
-				} else if (workingMessageId) {
+				if (workingMessageId) {
 					await flushWorkingMessage();
 				}
 
