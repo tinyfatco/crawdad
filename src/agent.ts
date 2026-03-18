@@ -1007,9 +1007,13 @@ function createRunner(
 		},
 
 		getContextInfo(): ContextInfo {
-			const currentModel = agent.state.model;
+			// Re-resolve model to pick up settings.json changes
+			const currentModel = resolveModel(workspaceDir, modelRegistry);
 			const contextWindow = currentModel?.contextWindow || 200000;
-			const messages = session ? getSession().messages : [];
+
+			// Force session init so we can read persisted messages
+			const currentSession = getSession();
+			const messages = currentSession.messages;
 
 			// Find last assistant message with usage data
 			let contextTokens = 0;
