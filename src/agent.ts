@@ -31,6 +31,15 @@ export interface PendingMessage {
 	timestamp: number;
 }
 
+export interface ContextInfo {
+	model: string;
+	provider: string;
+	contextWindow: number;
+	messageCount: number;
+	contextTokens: number;
+	contextPercent: number;
+}
+
 export interface AgentRunner {
 	run(
 		ctx: MomContext,
@@ -40,6 +49,8 @@ export interface AgentRunner {
 	abort(): void;
 	/** Steer a message into the active run (mid-run injection via pi-agent) */
 	steer(text: string): void;
+	/** Get current context diagnostics */
+	getContextInfo(): ContextInfo;
 }
 
 
@@ -993,6 +1004,34 @@ function createRunner(
 			} else {
 				log.logWarning(`[awareness] steer called but not streaming, ignoring`);
 			}
+		},
+
+		getContextInfo(): ContextInfo {
+			const currentModel = agent.state.model;
+			const contextWindow = currentModel?.contextWindow || 200000;
+			const messages = session ? getSession().messages : [];
+
+			// Find last assistant message with usage data
+			let contextTokens = 0;
+			for (let i = messages.length - 1; i >= 0; i--) {
+				const m = messages[i] as any;
+				if (m.role === "assistant" && m.usage) {
+					contextTokens = m.usage.input + m.usage.output +
+						(m.usage.cacheRead || 0) + (m.usage.cacheWrite || 0);
+					break;
+				}
+			}
+
+			const contextPercent = contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0;
+
+			return {
+				model: currentModel?.id || "unknown",
+				provider: currentModel?.provider || "unknown",
+				contextWindow,
+				messageCount: messages.length,
+				contextTokens,
+				contextPercent,
+			};
 		},
 	};
 }

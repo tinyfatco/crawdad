@@ -415,7 +415,7 @@ const handler: MomHandler = {
 		// Intercept slash commands before spinning up the agent
 		const trimmed = event.text.trim();
 		if (trimmed.startsWith("/") && !isEvent) {
-			const handled = await handleSlashCommand(trimmed, event.channel, workingDir, platform);
+			const handled = await handleSlashCommand(trimmed, event.channel, workingDir, platform, awareness?.runner);
 			if (handled) return;
 		}
 

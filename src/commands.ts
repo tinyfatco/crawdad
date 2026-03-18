@@ -8,6 +8,7 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { PlatformAdapter } from "./adapters/types.js";
+import type { AgentRunner } from "./agent.js";
 import { findModel, listModels, resolveModel } from "./model-config.js";
 import * as log from "./log.js";
 
@@ -19,6 +20,7 @@ export async function handleSlashCommand(
 	channelId: string,
 	workingDir: string,
 	platform: PlatformAdapter,
+	runner?: AgentRunner,
 ): Promise<boolean> {
 	const parts = text.trim().split(/\s+/);
 	const cmd = parts[0].toLowerCase();
@@ -29,6 +31,9 @@ export async function handleSlashCommand(
 			return true;
 		case "/verbose":
 			await handleVerboseCommand(parts.slice(1), channelId, workingDir, platform);
+			return true;
+		case "/context":
+			await handleContextCommand(channelId, platform, runner);
 			return true;
 		default:
 			return false;
@@ -163,4 +168,33 @@ async function handleVerboseCommand(
 		channelId,
 		`Verbose *${label}*\n_(${settings.verbose ? "working message shown" : "working message hidden"})_`,
 	);
+}
+
+async function handleContextCommand(
+	channelId: string,
+	platform: PlatformAdapter,
+	runner?: AgentRunner,
+): Promise<void> {
+	if (!runner) {
+		await platform.postMessage(channelId, "_No runner available_");
+		return;
+	}
+
+	const info = runner.getContextInfo();
+
+	const formatTokens = (count: number): string => {
+		if (count < 1000) return count.toString();
+		if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+		if (count < 1000000) return `${Math.round(count / 1000)}k`;
+		return `${(count / 1000000).toFixed(1)}M`;
+	};
+
+	const lines = [
+		`*Context*`,
+		`Model: ${info.provider}/${info.model}`,
+		`Window: ${formatTokens(info.contextTokens)} / ${formatTokens(info.contextWindow)} (${info.contextPercent.toFixed(1)}%)`,
+		`Messages: ${info.messageCount}`,
+	];
+
+	await platform.postMessage(channelId, lines.join("\n"));
 }
