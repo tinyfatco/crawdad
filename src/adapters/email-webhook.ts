@@ -361,6 +361,7 @@ Keep responses concise and professional. The user will receive one email with yo
 			messageId: payload?.messageId,
 			inReplyTo: payload?.inReplyTo,
 			references: payload?.references,
+			allRecipients: payload?.allRecipients || [],
 		};
 
 		return {
@@ -451,7 +452,7 @@ Keep responses concise and professional. The user will receive one email with yo
 	// ==========================================================================
 
 	private async sendEmailReply(
-		meta: { from: string; subject: string; messageId?: string; inReplyTo?: string; references?: string },
+		meta: { from: string; subject: string; messageId?: string; inReplyTo?: string; references?: string; allRecipients?: string[] },
 		finalText: string,
 		toolLog: string[],
 		attachments: Array<{ filename: string; filePath: string }> = [],
@@ -466,8 +467,18 @@ Keep responses concise and professional. The user will receive one email with yo
 
 		const replySubject = meta.subject.startsWith("Re:") ? meta.subject : `Re: ${meta.subject}`;
 
+		// Reply-all: combine sender + all other recipients, deduped
+		const allTo = new Set<string>();
+		allTo.add(meta.from.toLowerCase());
+		if (meta.allRecipients) {
+			for (const addr of meta.allRecipients) {
+				allTo.add(addr.toLowerCase());
+			}
+		}
+		const toList = Array.from(allTo).join(", ");
+
 		const emailMetadata: Record<string, unknown> = {
-			to: meta.from,
+			to: toList,
 			subject: replySubject,
 			body: finalText,
 		};
@@ -486,7 +497,7 @@ Keep responses concise and professional. The user will receive one email with yo
 				: meta.messageId;
 		}
 
-		log.logInfo(`[email] Sending reply to ${meta.from}: ${replySubject}`);
+		log.logInfo(`[email] Sending reply to ${toList}: ${replySubject}`);
 
 		try {
 			let response: Response;
