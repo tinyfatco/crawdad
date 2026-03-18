@@ -310,6 +310,17 @@ When mentioning users, use @username format.`;
 		return true;
 	}
 
+	protected readVerboseSetting(): boolean {
+		try {
+			const settingsPath = join(this.workingDir, "settings.json");
+			if (existsSync(settingsPath)) {
+				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+				return settings.verbose !== false; // default true
+			}
+		} catch { /* ignore */ }
+		return true;
+	}
+
 	// ==========================================================================
 	// Context creation
 	// ==========================================================================
@@ -339,6 +350,7 @@ When mentioning users, use @username format.`;
 				users: this.getAllUsers(),
 				channelName: this.channels.get(event.channel)?.name,
 				isEvent,
+				verbose: this.readVerboseSetting(),
 			},
 			{
 				logBotResponse: (ch, text, ts) => this.logBotResponse(ch, text, ts),

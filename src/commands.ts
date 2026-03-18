@@ -27,6 +27,9 @@ export async function handleSlashCommand(
 		case "/model":
 			await handleModelCommand(parts.slice(1), channelId, workingDir, platform);
 			return true;
+		case "/verbose":
+			await handleVerboseCommand(parts.slice(1), channelId, workingDir, platform);
+			return true;
 		default:
 			return false;
 	}
@@ -120,5 +123,44 @@ async function handleModelCommand(
 	await platform.postMessage(
 		channelId,
 		`Switched to *${match.provider}/${match.id}*\n_(takes effect on next message)_`,
+	);
+}
+
+async function handleVerboseCommand(
+	args: string[],
+	channelId: string,
+	workingDir: string,
+	platform: PlatformAdapter,
+): Promise<void> {
+	const settingsPath = join(workingDir, "settings.json");
+	let settings: Record<string, unknown> = {};
+	if (existsSync(settingsPath)) {
+		try {
+			settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+		} catch { /* start fresh */ }
+	}
+
+	const arg = args[0]?.toLowerCase();
+
+	if (!arg) {
+		// Toggle
+		const current = settings.verbose !== false;
+		settings.verbose = !current;
+	} else if (arg === "on" || arg === "true") {
+		settings.verbose = true;
+	} else if (arg === "off" || arg === "false") {
+		settings.verbose = false;
+	} else {
+		await platform.postMessage(channelId, `Usage: \`/verbose\` (toggle), \`/verbose on\`, \`/verbose off\``);
+		return;
+	}
+
+	writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+
+	const label = settings.verbose ? "on" : "off";
+	log.logInfo(`Verbose ${label} via /verbose command`);
+	await platform.postMessage(
+		channelId,
+		`Verbose *${label}*\n_(${settings.verbose ? "working message shown" : "working message hidden"})_`,
 	);
 }

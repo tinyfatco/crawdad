@@ -41,6 +41,8 @@ export interface TwoMessageConfig {
 	channelName?: string;
 	/** Whether this is a scheduled event */
 	isEvent?: boolean;
+	/** Whether to show the working message (default: true) */
+	verbose?: boolean;
 }
 
 /**
@@ -101,8 +103,11 @@ export function createTwoMessageContext(
 		return isWorking ? display + " ..." : display;
 	};
 
+	const verbose = config.verbose !== false; // default true
+
 	// Send or edit the working message (Message 1)
 	const flushWorkingMessage = async () => {
+		if (!verbose) return; // silent mode — skip working message entirely
 		const display = buildWorkingDisplay();
 		if (workingMessageId) {
 			await ops.update(event.channel, workingMessageId, display);

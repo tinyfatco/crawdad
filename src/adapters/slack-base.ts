@@ -206,6 +206,17 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		return true;
 	}
 
+	protected readVerboseSetting(): boolean {
+		try {
+			const settingsPath = join(this.workingDir, "settings.json");
+			if (existsSync(settingsPath)) {
+				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+				return settings.verbose !== false; // default true
+			}
+		} catch { /* ignore */ }
+		return true;
+	}
+
 	// ==========================================================================
 	// Context creation
 	// ==========================================================================
@@ -237,6 +248,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 				users: this.getAllUsers(),
 				channelName: this.channels.get(event.channel)?.name,
 				isEvent,
+				verbose: this.readVerboseSetting(),
 			},
 			{
 				onWorkingUpdate: (id) => {
