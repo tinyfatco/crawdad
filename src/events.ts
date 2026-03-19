@@ -394,7 +394,7 @@ export class EventsWatcher {
 
 			// Jitter: ± spontaneity * baseDelay
 			const jitterMs = (Math.random() * 2 - 1) * (event.spontaneity ?? 0) * baseDelayMs;
-			let delayMs = Math.max(baseDelayMs + jitterMs, 5000); // floor 5s
+			let delayMs = Math.max(baseDelayMs + jitterMs, 90_000); // floor 90s
 
 			// Quiet hours: if the jittered time lands in quiet hours, push to end
 			if (event.quietHours) {
