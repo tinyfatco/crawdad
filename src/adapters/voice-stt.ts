@@ -44,7 +44,7 @@ export function createSttSession(
 
 	const params = new URLSearchParams({
 		model_id: "scribe_v1",
-		audio_format: "mulaw_8000",
+		audio_format: "ulaw_8000",
 		commit_strategy: "vad",
 		vad_silence_threshold_secs: String(vadThreshold),
 		language_code: langCode,
@@ -92,6 +92,8 @@ export function createSttSession(
 				}
 
 				default:
+					// Log all unhandled message types for debugging
+					log.logInfo(`[voice-stt] Message: ${JSON.stringify(msg).substring(0, 300)}`);
 					// Errors come as various types ending in "_error"
 					if (msg.type?.includes("error")) {
 						log.logWarning(`[voice-stt] Error: ${msg.type} - ${msg.message || JSON.stringify(msg)}`);
