@@ -28,6 +28,10 @@ export interface PeriodicEvent {
 	text: string;
 	schedule: string; // cron syntax
 	timezone: string; // IANA timezone
+	/** 0-1, adds jitter to the cron interval. 0 = exact cron, 0.3 = ±30% of interval */
+	spontaneity?: number;
+	/** Suppress fires during this window (HH:MM format, e.g. "23:00"-"07:00") */
+	quietHours?: { start: string; end: string };
 }
 
 export type ScheduledEvent = ImmediateEvent | OneShotEvent | PeriodicEvent;
@@ -35,6 +39,48 @@ export type ScheduledEvent = ImmediateEvent | OneShotEvent | PeriodicEvent;
 // ============================================================================
 // EventsWatcher
 // ============================================================================
+
+/**
+ * If a timestamp falls inside the quiet hours window, push it to the end.
+ */
+function pushPastQuietHours(
+	timestampMs: number,
+	quietHours: { start: string; end: string },
+	timezone: string,
+): number {
+	const [startH, startM] = quietHours.start.split(":").map(Number);
+	const [endH, endM] = quietHours.end.split(":").map(Number);
+
+	const d = new Date(timestampMs);
+	const timeStr = d.toLocaleTimeString("en-US", { timeZone: timezone, hour12: false, hour: "2-digit", minute: "2-digit" });
+	const [h, m] = timeStr.split(":").map(Number);
+
+	const timeMinutes = h * 60 + m;
+	const startMinutes = startH * 60 + startM;
+	const endMinutes = endH * 60 + endM;
+
+	let inQuiet: boolean;
+	if (startMinutes <= endMinutes) {
+		inQuiet = timeMinutes >= startMinutes && timeMinutes < endMinutes;
+	} else {
+		// Overnight: e.g. 23:00-07:00
+		inQuiet = timeMinutes >= startMinutes || timeMinutes < endMinutes;
+	}
+
+	if (!inQuiet) return timestampMs;
+
+	const dateStr = d.toLocaleDateString("en-CA", { timeZone: timezone });
+	const endTarget = new Date(`${dateStr}T${quietHours.end}:00`);
+	const tzDate = new Date(endTarget.toLocaleString("en-US", { timeZone: timezone }));
+	const offset = endTarget.getTime() - tzDate.getTime();
+	let endMs = endTarget.getTime() + offset;
+
+	if (endMs <= timestampMs) {
+		endMs += 24 * 60 * 60 * 1000;
+	}
+
+	return endMs;
+}
 
 const DEBOUNCE_MS = 100;
 const MAX_RETRIES = 3;
@@ -251,6 +297,8 @@ export class EventsWatcher {
 					text: data.text,
 					schedule: data.schedule,
 					timezone: data.timezone,
+					spontaneity: data.spontaneity,
+					quietHours: data.quietHours,
 				};
 
 			default:
@@ -311,18 +359,66 @@ export class EventsWatcher {
 
 	private handlePeriodic(filename: string, event: PeriodicEvent): void {
 		try {
-			const cron = new Cron(event.schedule, { timezone: event.timezone }, () => {
-				log.logInfo(`Executing periodic event: ${filename}`);
-				this.execute(filename, event, false); // Don't delete periodic events
-			});
-
-			this.crons.set(filename, cron);
-
-			const next = cron.nextRun();
-			log.logInfo(`Scheduled periodic event: ${filename}, next run: ${next?.toISOString() ?? "unknown"}`);
+			if (event.spontaneity && event.spontaneity > 0) {
+				// Jittered periodic: use cron to compute base intervals, add jitter via setTimeout
+				this.scheduleJitteredPeriodic(filename, event);
+			} else {
+				// Standard cron: exact timing
+				const cron = new Cron(event.schedule, { timezone: event.timezone }, () => {
+					log.logInfo(`Executing periodic event: ${filename}`);
+					this.execute(filename, event, false);
+				});
+				this.crons.set(filename, cron);
+				const next = cron.nextRun();
+				log.logInfo(`Scheduled periodic event: ${filename}, next run: ${next?.toISOString() ?? "unknown"}`);
+			}
 		} catch (err) {
 			log.logWarning(`Invalid cron schedule for ${filename}: ${event.schedule}`, String(err));
 			this.deleteFile(filename);
+		}
+	}
+
+	/**
+	 * Schedule a periodic event with jitter. Uses cron to compute the base
+	 * next-fire time, then adds random jitter scaled by spontaneity.
+	 * After each fire, reschedules with fresh jitter.
+	 */
+	private scheduleJitteredPeriodic(filename: string, event: PeriodicEvent): void {
+		try {
+			const cron = new Cron(event.schedule, { timezone: event.timezone });
+			const nextCron = cron.nextRun();
+			if (!nextCron) return;
+
+			const now = Date.now();
+			const baseDelayMs = nextCron.getTime() - now;
+
+			// Jitter: ± spontaneity * baseDelay
+			const jitterMs = (Math.random() * 2 - 1) * (event.spontaneity ?? 0) * baseDelayMs;
+			let delayMs = Math.max(baseDelayMs + jitterMs, 5000); // floor 5s
+
+			// Quiet hours: if the jittered time lands in quiet hours, push to end
+			if (event.quietHours) {
+				const fireMs = now + delayMs;
+				const pushed = pushPastQuietHours(fireMs, event.quietHours, event.timezone);
+				if (pushed !== fireMs) {
+					delayMs = pushed - now;
+				}
+			}
+
+			const fireTime = new Date(now + delayMs).toISOString();
+			log.logInfo(`Scheduled jittered periodic: ${filename}, next fire: ${fireTime} (${Math.round(delayMs / 1000)}s, spontaneity=${event.spontaneity})`);
+
+			const timer = setTimeout(() => {
+				this.timers.delete(filename);
+				log.logInfo(`Executing jittered periodic event: ${filename}`);
+				this.execute(filename, event, false);
+				// Reschedule with fresh jitter
+				this.scheduleJitteredPeriodic(filename, event);
+			}, delayMs);
+
+			this.timers.set(filename, timer);
+		} catch (err) {
+			log.logWarning(`Failed to schedule jittered periodic ${filename}`, String(err));
 		}
 	}
 
@@ -420,7 +516,11 @@ export function parseEventContent(content: string): ScheduledEvent | null {
 				return { type: "one-shot", channelId: data.channelId, text: data.text, at: data.at };
 			case "periodic":
 				if (!data.schedule || !data.timezone) return null;
-				return { type: "periodic", channelId: data.channelId, text: data.text, schedule: data.schedule, timezone: data.timezone };
+				return {
+					type: "periodic", channelId: data.channelId, text: data.text,
+					schedule: data.schedule, timezone: data.timezone,
+					spontaneity: data.spontaneity, quietHours: data.quietHours,
+				};
 			default:
 				return null;
 		}

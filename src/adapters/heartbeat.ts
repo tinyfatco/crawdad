@@ -1,71 +1,21 @@
 /**
  * HeartbeatAdapter — headless adapter for spontaneous agent wake-ups.
  *
- * Always created implicitly (not via --adapter flag). Owns its own scheduling
- * timer — reads spontaneity settings from settings.json, computes jittered
- * next-fire times, and self-triggers via handler.handleEvent().
+ * Always created implicitly (not via --adapter flag). Accepts events on the
+ * "heartbeat" channel, runs the agent with a no-op context (output goes to
+ * awareness/context.jsonl via the runner, not to any external platform).
  *
- * Exposes getNextFire() so the /schedule endpoint can include the heartbeat
- * in the wake manifest for the DO alarm chain (container wakes from sleep).
- *
- * No event file needed — settings.json is the single source of truth.
+ * Scheduling is handled by the events system (periodic event file in events/).
+ * This adapter just accepts and runs the events headlessly.
  */
 
 import { appendFileSync } from "fs";
 import { join } from "path";
-import { MomSettingsManager, type MomSpontaneitySettings } from "../context.js";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 
 export const HEARTBEAT_CHANNEL_ID = "heartbeat";
-
-export interface HeartbeatAdapterConfig {
-	workingDir: string;
-}
-
-/**
- * If a timestamp falls inside the quiet hours window, push it to the end.
- */
-function pushPastQuietHours(
-	timestampMs: number,
-	quietHours: { start: string; end: string },
-	timezone: string,
-): number {
-	const [startH, startM] = quietHours.start.split(":").map(Number);
-	const [endH, endM] = quietHours.end.split(":").map(Number);
-
-	const d = new Date(timestampMs);
-	const timeStr = d.toLocaleTimeString("en-US", { timeZone: timezone, hour12: false, hour: "2-digit", minute: "2-digit" });
-	const [h, m] = timeStr.split(":").map(Number);
-
-	const timeMinutes = h * 60 + m;
-	const startMinutes = startH * 60 + startM;
-	const endMinutes = endH * 60 + endM;
-
-	let inQuiet: boolean;
-	if (startMinutes <= endMinutes) {
-		inQuiet = timeMinutes >= startMinutes && timeMinutes < endMinutes;
-	} else {
-		// Overnight: e.g. 23:00-07:00
-		inQuiet = timeMinutes >= startMinutes || timeMinutes < endMinutes;
-	}
-
-	if (!inQuiet) return timestampMs;
-
-	// Push to end of quiet hours
-	const dateStr = d.toLocaleDateString("en-CA", { timeZone: timezone });
-	const endTarget = new Date(`${dateStr}T${quietHours.end}:00`);
-	const tzDate = new Date(endTarget.toLocaleString("en-US", { timeZone: timezone }));
-	const offset = endTarget.getTime() - tzDate.getTime();
-	let endMs = endTarget.getTime() + offset;
-
-	if (endMs <= timestampMs) {
-		endMs += 24 * 60 * 60 * 1000;
-	}
-
-	return endMs;
-}
 
 export class HeartbeatAdapter implements PlatformAdapter {
 	readonly name = "heartbeat";
@@ -85,14 +35,9 @@ If nothing needs attention, note a brief thought and go back to sleep. Avoid say
 	private handler!: MomHandler;
 	private queue: MomEvent[] = [];
 	private processing = false;
-	private timer: NodeJS.Timeout | null = null;
-	private nextFireMs: number | null = null;
-	private settings: MomSpontaneitySettings;
 
-	constructor(config: HeartbeatAdapterConfig) {
+	constructor(config: { workingDir: string }) {
 		this.workingDir = config.workingDir;
-		const settingsManager = new MomSettingsManager(config.workingDir);
-		this.settings = settingsManager.getSpontaneitySettings();
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -100,95 +45,21 @@ If nothing needs attention, note a brief thought and go back to sleep. Avoid say
 	}
 
 	async start(): Promise<void> {
-		if (!this.settings.enabled) {
-			log.logInfo("Heartbeat adapter disabled (spontaneity.enabled = false)");
-			return;
-		}
-
-		log.logInfo(`Heartbeat adapter starting (interval=${this.settings.intervalMinutes}min, spontaneity=${this.settings.spontaneity})`);
-		this.scheduleNext();
+		log.logInfo("Heartbeat adapter ready");
 	}
 
-	async stop(): Promise<void> {
-		if (this.timer) {
-			clearTimeout(this.timer);
-			this.timer = null;
-		}
-		this.nextFireMs = null;
-	}
-
-	/**
-	 * Get the next scheduled heartbeat fire time (ISO string).
-	 * Used by /schedule endpoint for the DO wake manifest.
-	 */
-	getNextFire(): string | null {
-		if (!this.nextFireMs) return null;
-		return new Date(this.nextFireMs).toISOString();
-	}
-
-	private scheduleNext(): void {
-		if (this.timer) {
-			clearTimeout(this.timer);
-		}
-
-		const baseMs = this.settings.intervalMinutes * 60 * 1000;
-		const jitter = (Math.random() * 2 - 1) * this.settings.spontaneity * baseMs;
-		let nextMs = Date.now() + baseMs + jitter;
-
-		// Enforce minimum 30s interval (safety floor for testing)
-		if (nextMs - Date.now() < 30_000) {
-			nextMs = Date.now() + 30_000;
-		}
-
-		const tz = this.settings.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-		if (this.settings.quietHours) {
-			nextMs = pushPastQuietHours(nextMs, this.settings.quietHours, tz);
-		}
-
-		this.nextFireMs = nextMs;
-		const delay = nextMs - Date.now();
-		const nextFire = new Date(nextMs).toISOString();
-
-		log.logInfo(`Heartbeat scheduled in ${Math.round(delay / 1000)}s (${nextFire})`);
-
-		this.timer = setTimeout(() => {
-			this.timer = null;
-			this.fireHeartbeat();
-		}, delay);
-	}
-
-	private fireHeartbeat(): void {
-		log.logInfo("Heartbeat firing");
-
-		const event: MomEvent = {
-			type: "mention",
-			channel: HEARTBEAT_CHANNEL_ID,
-			user: "heartbeat",
-			text: "[heartbeat] Spontaneous reflection",
-			ts: Date.now().toString(),
-		};
-
-		this.enqueueEvent(event);
-
-		// Schedule next heartbeat after this one completes
-		this.scheduleNext();
-	}
+	async stop(): Promise<void> {}
 
 	// -- Message operations (all no-ops — heartbeat is headless) --
 
 	async postMessage(_channel: string, _text: string): Promise<string> {
 		return String(Date.now());
 	}
-
 	async updateMessage(_channel: string, _ts: string, _text: string): Promise<void> {}
-
 	async deleteMessage(_channel: string, _ts: string): Promise<void> {}
-
 	async postInThread(_channel: string, _threadTs: string, _text: string): Promise<string> {
 		return String(Date.now());
 	}
-
 	async uploadFile(_channel: string, _filePath: string, _title?: string): Promise<void> {}
 
 	// -- Logging --
