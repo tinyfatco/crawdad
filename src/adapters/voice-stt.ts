@@ -43,7 +43,7 @@ export function createSttSession(
 	const langCode = config.languageCode ?? "en";
 
 	const params = new URLSearchParams({
-		model_id: "scribe_v1",
+		model_id: "scribe_v2_realtime",
 		audio_format: "ulaw_8000",
 		commit_strategy: "vad",
 		vad_silence_threshold_secs: String(vadThreshold),
