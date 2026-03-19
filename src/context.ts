@@ -27,12 +27,22 @@ export interface MomRetrySettings {
 	baseDelayMs: number;
 }
 
+export interface MomSpontaneitySettings {
+	enabled: boolean;
+	level: 1 | 2 | 3 | 4 | 5;
+	spontaneity: number; // 0-1, scales jitter window
+	intervalMinutes: number;
+	quietHours: { start: string; end: string };
+	timezone?: string; // IANA timezone, defaults to system
+}
+
 export interface MomSettings {
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high";
 	compaction?: Partial<MomCompactionSettings>;
 	retry?: Partial<MomRetrySettings>;
+	spontaneity?: Partial<MomSpontaneitySettings>;
 }
 
 const DEFAULT_COMPACTION: MomCompactionSettings = {
@@ -45,6 +55,23 @@ const DEFAULT_RETRY: MomRetrySettings = {
 	enabled: true,
 	maxRetries: 3,
 	baseDelayMs: 2000,
+};
+
+/** Level → base interval in minutes */
+const SPONTANEITY_LEVELS: Record<number, number> = {
+	1: 1440,  // ~once a day
+	2: 420,   // ~every 6-8 hours
+	3: 180,   // ~every 2-3 hours
+	4: 90,    // ~every 1-2 hours
+	5: 45,    // ~every 30-60 minutes
+};
+
+const DEFAULT_SPONTANEITY: MomSpontaneitySettings = {
+	enabled: true,
+	level: 3,
+	spontaneity: 0.3,
+	intervalMinutes: 180,
+	quietHours: { start: "23:00", end: "07:00" },
 };
 
 /**
@@ -115,6 +142,20 @@ export class MomSettingsManager {
 	setRetryEnabled(enabled: boolean): void {
 		this.settings.retry = { ...this.settings.retry, enabled };
 		this.save();
+	}
+
+	getSpontaneitySettings(): MomSpontaneitySettings {
+		const s = this.settings.spontaneity || {};
+		const level = s.level ?? DEFAULT_SPONTANEITY.level;
+		const intervalFromLevel = SPONTANEITY_LEVELS[level] ?? DEFAULT_SPONTANEITY.intervalMinutes;
+		return {
+			enabled: s.enabled ?? DEFAULT_SPONTANEITY.enabled,
+			level,
+			spontaneity: s.spontaneity ?? DEFAULT_SPONTANEITY.spontaneity,
+			intervalMinutes: s.intervalMinutes ?? intervalFromLevel,
+			quietHours: s.quietHours ?? DEFAULT_SPONTANEITY.quietHours,
+			timezone: s.timezone,
+		};
 	}
 
 	getDefaultModel(): string | undefined {

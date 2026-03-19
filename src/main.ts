@@ -3,6 +3,7 @@
 import { join, resolve } from "path";
 import { DiscordWebhookAdapter } from "./adapters/discord-webhook.js";
 import { EmailWebhookAdapter } from "./adapters/email-webhook.js";
+import { HeartbeatAdapter, HEARTBEAT_CHANNEL_ID } from "./adapters/heartbeat.js";
 import { SlackSocketAdapter } from "./adapters/slack-socket.js";
 import { SlackWebhookAdapter } from "./adapters/slack-webhook.js";
 import { TelegramPollingAdapter } from "./adapters/telegram-polling.js";
@@ -11,6 +12,7 @@ import { WebAdapter } from "./adapters/web.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
 import { handleSlashCommand } from "./commands.js";
+import { MomSettingsManager } from "./context.js";
 import { downloadChannel } from "./download.js";
 import { computeWakeManifest, createEventsWatcher } from "./events.js";
 import { Gateway } from "./gateway.js";
@@ -42,10 +44,12 @@ function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): st
 			if (/^-?\d+$/.test(channelId)) return `telegram:${ch.name}`;
 			if (channelId.startsWith("email-")) return `email:${channelId.replace("email-", "")}`;
 			if (channelId.startsWith("web-")) return `web:${ch.name}`;
+			if (channelId === "heartbeat") return `heartbeat:${ch.name}`;
 			return ch.name;
 		}
 	}
 	// Fallback for unknown channels
+	if (channelId === "heartbeat") return `heartbeat:heartbeat`;
 	if (/^[CDG]/.test(channelId)) return `slack:${channelId}`;
 	if (isDiscordSnowflake(channelId)) return `discord:${channelId}`;
 	if (/^-?\d+$/.test(channelId)) return `telegram:${channelId}`;
@@ -291,6 +295,10 @@ function createAdapter(name: string): AdapterWithHandler {
 }
 
 const adapters: AdapterWithHandler[] = parsedArgs.adapters.map(createAdapter);
+
+// Always create heartbeat adapter — implicit, not user-configured
+const heartbeatAdapter = new HeartbeatAdapter({ workingDir }) as AdapterWithHandler;
+adapters.push(heartbeatAdapter);
 
 // ============================================================================
 // Awareness — single unified state for the agent
@@ -544,6 +552,38 @@ log.logInfo(`[perf] all adapters started: ${(performance.now() - T_BOOT).toFixed
 const eventsWatcher = createEventsWatcher(workingDir, adapters);
 eventsWatcher.start();
 log.logInfo(`[perf] events watcher started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
+
+// Seed heartbeat event file if spontaneity is enabled and no heartbeat.json exists
+{
+	const { existsSync, mkdirSync, writeFileSync } = await import("fs");
+	const { join } = await import("path");
+
+	const settings = new MomSettingsManager(workingDir);
+	const spontaneity = settings.getSpontaneitySettings();
+
+	if (spontaneity.enabled) {
+		const eventsDir = join(workingDir, "events");
+		const heartbeatFile = join(eventsDir, "heartbeat.json");
+		if (!existsSync(heartbeatFile)) {
+			if (!existsSync(eventsDir)) {
+				mkdirSync(eventsDir, { recursive: true });
+			}
+			const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+			const event = {
+				type: "spontaneous",
+				channelId: HEARTBEAT_CHANNEL_ID,
+				text: "[heartbeat] Spontaneous reflection",
+				intervalMinutes: spontaneity.intervalMinutes,
+				spontaneity: spontaneity.spontaneity,
+				quietHours: spontaneity.quietHours,
+				timezone: spontaneity.timezone || tz,
+			};
+			writeFileSync(heartbeatFile, JSON.stringify(event, null, 2), "utf-8");
+			log.logInfo(`Seeded heartbeat event file (interval=${spontaneity.intervalMinutes}min, spontaneity=${spontaneity.spontaneity})`);
+		}
+	}
+}
+
 log.logInfo(`[perf] TOTAL STARTUP: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
 // Handle shutdown

@@ -6,6 +6,7 @@ const CHANNEL_COLORS: Record<string, string> = {
   email: '#22c55e',
   web: '#8a8a88',
   discord: '#5865F2',
+  heartbeat: '#ef4444',
   unknown: '#8a8a88',
 };
 

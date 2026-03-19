@@ -60,6 +60,7 @@ export function parseUserPrefix(text: string): { channel: string; userName: stri
 
 /** Normalize channel identifiers to display-friendly names */
 export function formatChannel(channel: string): { label: string; type: string } {
+  if (channel === 'heartbeat' || channel.startsWith('heartbeat:')) return { label: 'heartbeat', type: 'heartbeat' };
   if (channel === 'web' || channel === 'web-user') return { label: 'web', type: 'web' };
   if (channel.startsWith('email-')) return { label: 'email', type: 'email' };
   if (channel.startsWith('telegram:') || /^-?\d+$/.test(channel)) return { label: channel.replace('telegram:', ''), type: 'telegram' };
