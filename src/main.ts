@@ -12,7 +12,6 @@ import { WebAdapter } from "./adapters/web.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
 import { handleSlashCommand } from "./commands.js";
-import { MomSettingsManager } from "./context.js";
 import { downloadChannel } from "./download.js";
 import { computeWakeManifest, createEventsWatcher } from "./events.js";
 import { Gateway } from "./gateway.js";
@@ -509,6 +508,17 @@ gateway.registerGet("/schedule", async (_req, res) => {
 	try {
 		const eventsDir = join(workingDir, "events");
 		const schedule = await computeWakeManifest(eventsDir);
+
+		// Include heartbeat's next fire in the manifest
+		const hbNextFire = (heartbeatAdapter as any).getNextFire?.() as string | null;
+		if (hbNextFire) {
+			schedule.events.push({ file: "heartbeat", type: "spontaneous", nextFire: hbNextFire });
+			// Update nextWake if heartbeat fires sooner
+			if (!schedule.nextWake || hbNextFire < schedule.nextWake) {
+				schedule.nextWake = hbNextFire;
+			}
+		}
+
 		res.writeHead(200, { "Content-Type": "application/json" });
 		res.end(JSON.stringify(schedule));
 	} catch (err) {
@@ -552,37 +562,6 @@ log.logInfo(`[perf] all adapters started: ${(performance.now() - T_BOOT).toFixed
 const eventsWatcher = createEventsWatcher(workingDir, adapters);
 eventsWatcher.start();
 log.logInfo(`[perf] events watcher started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
-
-// Seed heartbeat event file if spontaneity is enabled and no heartbeat.json exists
-{
-	const { existsSync, mkdirSync, writeFileSync } = await import("fs");
-	const { join } = await import("path");
-
-	const settings = new MomSettingsManager(workingDir);
-	const spontaneity = settings.getSpontaneitySettings();
-
-	if (spontaneity.enabled) {
-		const eventsDir = join(workingDir, "events");
-		const heartbeatFile = join(eventsDir, "heartbeat.json");
-		if (!existsSync(heartbeatFile)) {
-			if (!existsSync(eventsDir)) {
-				mkdirSync(eventsDir, { recursive: true });
-			}
-			const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-			const event = {
-				type: "spontaneous",
-				channelId: HEARTBEAT_CHANNEL_ID,
-				text: "[heartbeat] Spontaneous reflection",
-				intervalMinutes: spontaneity.intervalMinutes,
-				spontaneity: spontaneity.spontaneity,
-				quietHours: spontaneity.quietHours,
-				timezone: spontaneity.timezone || tz,
-			};
-			writeFileSync(heartbeatFile, JSON.stringify(event, null, 2), "utf-8");
-			log.logInfo(`Seeded heartbeat event file (interval=${spontaneity.intervalMinutes}min, spontaneity=${spontaneity.spontaneity})`);
-		}
-	}
-}
 
 log.logInfo(`[perf] TOTAL STARTUP: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 

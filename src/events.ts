@@ -1,5 +1,5 @@
 import { Cron } from "croner";
-import { existsSync, type FSWatcher, mkdirSync, statSync, unlinkSync, watch, writeFileSync } from "fs";
+import { existsSync, type FSWatcher, mkdirSync, statSync, unlinkSync, watch } from "fs";
 import { readFile, readdir } from "fs/promises";
 import { join } from "path";
 import type { MomEvent as MomIncomingEvent, PlatformAdapter } from "./adapters/types.js";
@@ -30,72 +30,11 @@ export interface PeriodicEvent {
 	timezone: string; // IANA timezone
 }
 
-export interface SpontaneousEvent {
-	type: "spontaneous";
-	channelId: string;
-	text: string;
-	intervalMinutes: number;
-	spontaneity: number; // 0-1, scales jitter window
-	quietHours?: { start: string; end: string }; // HH:MM format
-	timezone: string; // IANA timezone
-	nextFire?: string; // ISO 8601, computed and persisted after each fire
-}
-
-export type ScheduledEvent = ImmediateEvent | OneShotEvent | PeriodicEvent | SpontaneousEvent;
+export type ScheduledEvent = ImmediateEvent | OneShotEvent | PeriodicEvent;
 
 // ============================================================================
 // EventsWatcher
 // ============================================================================
-
-/**
- * If a timestamp falls inside the quiet hours window, push it to the end of quiet hours.
- */
-function pushPastQuietHours(
-	timestampMs: number,
-	quietHours: { start: string; end: string },
-	timezone: string,
-): number {
-	// Parse HH:MM
-	const [startH, startM] = quietHours.start.split(":").map(Number);
-	const [endH, endM] = quietHours.end.split(":").map(Number);
-
-	// Get the hour/minute in the agent's timezone
-	const d = new Date(timestampMs);
-	const timeStr = d.toLocaleTimeString("en-US", { timeZone: timezone, hour12: false, hour: "2-digit", minute: "2-digit" });
-	const [h, m] = timeStr.split(":").map(Number);
-
-	const timeMinutes = h * 60 + m;
-	const startMinutes = startH * 60 + startM;
-	const endMinutes = endH * 60 + endM;
-
-	let inQuiet: boolean;
-	if (startMinutes <= endMinutes) {
-		// Same day: e.g. 09:00-17:00
-		inQuiet = timeMinutes >= startMinutes && timeMinutes < endMinutes;
-	} else {
-		// Overnight: e.g. 23:00-07:00
-		inQuiet = timeMinutes >= startMinutes || timeMinutes < endMinutes;
-	}
-
-	if (!inQuiet) return timestampMs;
-
-	// Push to end of quiet hours on the next occurrence
-	// Create a date at endH:endM in the target timezone
-	const dateStr = d.toLocaleDateString("en-CA", { timeZone: timezone }); // YYYY-MM-DD
-	const endTarget = new Date(`${dateStr}T${quietHours.end}:00`);
-
-	// Adjust for timezone offset: construct in the target timezone
-	const tzDate = new Date(endTarget.toLocaleString("en-US", { timeZone: timezone }));
-	const offset = endTarget.getTime() - tzDate.getTime();
-	let endMs = endTarget.getTime() + offset;
-
-	// If the end time is before now (overnight case), push to next day
-	if (endMs <= timestampMs) {
-		endMs += 24 * 60 * 60 * 1000;
-	}
-
-	return endMs;
-}
 
 const DEBOUNCE_MS = 100;
 const MAX_RETRIES = 3;
@@ -279,9 +218,6 @@ export class EventsWatcher {
 			case "periodic":
 				this.handlePeriodic(filename, event);
 				break;
-			case "spontaneous":
-				this.handleSpontaneous(filename, event);
-				break;
 		}
 	}
 
@@ -315,21 +251,6 @@ export class EventsWatcher {
 					text: data.text,
 					schedule: data.schedule,
 					timezone: data.timezone,
-				};
-
-			case "spontaneous":
-				if (!data.intervalMinutes || !data.timezone) {
-					throw new Error(`Missing 'intervalMinutes' or 'timezone' for spontaneous event in ${filename}`);
-				}
-				return {
-					type: "spontaneous",
-					channelId: data.channelId,
-					text: data.text,
-					intervalMinutes: data.intervalMinutes,
-					spontaneity: data.spontaneity ?? 0.3,
-					quietHours: data.quietHours,
-					timezone: data.timezone,
-					nextFire: data.nextFire,
 				};
 
 			default:
@@ -405,75 +326,6 @@ export class EventsWatcher {
 		}
 	}
 
-	private handleSpontaneous(filename: string, event: SpontaneousEvent): void {
-		const now = Date.now();
-
-		// If nextFire is set and in the future, schedule for that time
-		if (event.nextFire) {
-			const fireTime = new Date(event.nextFire).getTime();
-			if (fireTime > now) {
-				const delay = fireTime - now;
-				log.logInfo(`Scheduling spontaneous event: ${filename} in ${Math.round(delay / 1000)}s`);
-				const timer = setTimeout(() => {
-					this.timers.delete(filename);
-					log.logInfo(`Executing spontaneous event: ${filename}`);
-					this.execute(filename, event, false);
-					this.rescheduleSpontaneous(filename, event);
-				}, delay);
-				this.timers.set(filename, timer);
-				return;
-			}
-
-			// Past due but within grace window — execute now, then reschedule
-			const ageMs = now - fireTime;
-			if (ageMs <= COLD_WAKE_GRACE_MS) {
-				log.logInfo(`Spontaneous event ${Math.round(ageMs / 1000)}s past due (within grace), executing: ${filename}`);
-				this.execute(filename, event, false);
-				this.rescheduleSpontaneous(filename, event);
-				return;
-			}
-		}
-
-		// No nextFire or too old — compute first fire and schedule
-		this.rescheduleSpontaneous(filename, event);
-	}
-
-	/**
-	 * Compute a jittered next fire time and persist it to the event file.
-	 */
-	private rescheduleSpontaneous(filename: string, event: SpontaneousEvent): void {
-		const baseMs = event.intervalMinutes * 60 * 1000;
-		const jitter = (Math.random() * 2 - 1) * event.spontaneity * baseMs;
-		let nextFireMs = Date.now() + baseMs + jitter;
-
-		// Enforce quiet hours
-		if (event.quietHours) {
-			nextFireMs = pushPastQuietHours(nextFireMs, event.quietHours, event.timezone);
-		}
-
-		const nextFire = new Date(nextFireMs).toISOString();
-
-		// Persist nextFire back to the event file so the wake manifest picks it up
-		const updated: SpontaneousEvent = { ...event, nextFire };
-		const filePath = join(this.eventsDir, filename);
-		try {
-			writeFileSync(filePath, JSON.stringify(updated, null, 2), "utf-8");
-		} catch (err) {
-			log.logWarning(`Failed to persist spontaneous nextFire: ${filename}`, String(err));
-		}
-
-		const delay = nextFireMs - Date.now();
-		log.logInfo(`Rescheduled spontaneous event: ${filename} in ${Math.round(delay / 1000)}s (${nextFire})`);
-
-		const timer = setTimeout(() => {
-			this.timers.delete(filename);
-			log.logInfo(`Executing spontaneous event: ${filename}`);
-			this.execute(filename, event, false);
-			this.rescheduleSpontaneous(filename, event);
-		}, delay);
-		this.timers.set(filename, timer);
-	}
-
 	private execute(filename: string, event: ScheduledEvent, deleteAfter: boolean = true): void {
 		// Format the message
 		let scheduleInfo: string;
@@ -486,9 +338,6 @@ export class EventsWatcher {
 				break;
 			case "periodic":
 				scheduleInfo = event.schedule;
-				break;
-			case "spontaneous":
-				scheduleInfo = `${event.intervalMinutes}min`;
 				break;
 		}
 
@@ -572,13 +421,6 @@ export function parseEventContent(content: string): ScheduledEvent | null {
 			case "periodic":
 				if (!data.schedule || !data.timezone) return null;
 				return { type: "periodic", channelId: data.channelId, text: data.text, schedule: data.schedule, timezone: data.timezone };
-			case "spontaneous":
-				if (!data.intervalMinutes || !data.timezone) return null;
-				return {
-					type: "spontaneous", channelId: data.channelId, text: data.text,
-					intervalMinutes: data.intervalMinutes, spontaneity: data.spontaneity ?? 0.3,
-					quietHours: data.quietHours, timezone: data.timezone, nextFire: data.nextFire,
-				};
 			default:
 				return null;
 		}
@@ -630,11 +472,6 @@ export async function computeWakeManifest(eventsDir: string): Promise<{
 				const at = new Date(event.at);
 				if (at.getTime() > Date.now()) {
 					result.push({ file: filename, type: "one-shot", nextFire: at.toISOString() });
-				}
-			} else if (event.type === "spontaneous" && event.nextFire) {
-				const nf = new Date(event.nextFire);
-				if (nf.getTime() > Date.now()) {
-					result.push({ file: filename, type: "spontaneous", nextFire: nf.toISOString() });
 				}
 			}
 			// Skip immediate events — they fire on creation, not on schedule
