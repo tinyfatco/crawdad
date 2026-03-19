@@ -1,18 +1,20 @@
 /**
- * VoiceAdapter — phone call adapter using Twilio + ElevenLabs.
+ * VoiceAdapter — phone call adapter using ElevenLabs STT/TTS.
  *
- * Telephony: Twilio Programmable Voice + bidirectional Media Streams
- * STT: ElevenLabs realtime (VAD-based end-of-utterance)
- * TTS: ElevenLabs streaming WebSocket (mulaw 8kHz output)
+ * The adapter doesn't know about Twilio. It just runs a WebSocket server
+ * on port 8765 that accepts audio streams. The orchestrator (crawdad-cf)
+ * handles telephony and pipes audio to/from this server.
  *
- * Each caller utterance = one agent run. The call session stays open between runs.
- * The agent sees text in, produces text out — same as any other adapter.
+ * Audio format: mulaw 8kHz (standard telephony), base64 encoded in JSON frames.
+ * The WebSocket protocol matches Twilio Media Streams format for compatibility,
+ * but the adapter doesn't depend on Twilio — any source sending the same format works.
+ *
+ * Each caller utterance (STT end-of-utterance) = one agent run.
  */
 
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
+import { createServer, type Server } from "http";
 import { appendFileSync } from "fs";
 import { join } from "path";
-import { randomUUID } from "crypto";
 import WebSocket, { WebSocketServer } from "ws";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
@@ -25,37 +27,30 @@ import { textToSpeechStreaming, type TtsConfig } from "./voice-tts.js";
 // ============================================================================
 
 interface CallSession {
-	callSid: string;
+	/** Stream identifier (from the orchestrator) */
 	streamSid: string | null;
+	/** Caller identifier (phone number or ID) */
 	from: string;
-	to: string;
-	status: "ringing" | "connected" | "ended";
-	/** Twilio Media Stream WebSocket (bidirectional audio) */
-	mediaWs: WebSocket | null;
+	/** Call identifier */
+	callSid: string;
+	/** The audio WebSocket connection */
+	ws: WebSocket;
 	/** ElevenLabs STT session */
 	sttSession: SttSession | null;
-	/** Whether TTS is currently playing (for barge-in) */
+	/** Whether TTS is currently playing */
 	ttsPlaying: boolean;
-	/** Timestamp of call start */
 	startedAt: number;
 }
 
 export interface VoiceAdapterConfig {
 	workingDir: string;
-	twilioAccountSid: string;
-	twilioAuthToken: string;
-	twilioPhoneNumber: string;
 	elevenlabsApiKey: string;
 	elevenlabsVoiceId: string;
 	elevenlabsModelId?: string;
 	/** VAD silence threshold in seconds (default 1.5) */
 	vadSilenceThreshold?: number;
-	/** Port for the Media Stream WebSocket server (default 8765) */
-	mediaWsPort?: number;
-	/** Agent ID — used to construct the Media Stream WebSocket URL via crawdad-cf */
-	agentId?: string;
-	/** Base URL for the WebSocket stream (default: wss://crawdad.tinyfat.com) */
-	streamBaseUrl?: string;
+	/** Port for the WebSocket server (default 8765) */
+	wsPort?: number;
 }
 
 // ============================================================================
@@ -77,13 +72,12 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 	private ttsConfig: TtsConfig;
 	private sttConfig: SttConfig;
 
-	/** Active call sessions by callSid */
+	/** Active call sessions */
 	private calls = new Map<string, CallSession>();
-	/** WebSocket server for Twilio Media Streams */
+	/** WebSocket server */
 	private wss: WebSocketServer | null = null;
 	private wsServer: Server | null = null;
 
-	/** Channel ID for voice calls (stable, used for awareness) */
 	private channelId = "voice-call";
 
 	constructor(config: VoiceAdapterConfig) {
@@ -111,18 +105,17 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 	async start(): Promise<void> {
 		if (!this.handler) throw new Error("VoiceAdapter: handler not set");
 
-		// Start WebSocket server for Twilio Media Streams
-		const port = this.config.mediaWsPort || 8765;
+		const port = this.config.wsPort || 8765;
 		this.wsServer = createServer();
 		this.wss = new WebSocketServer({ server: this.wsServer });
 
-		this.wss.on("connection", (ws, req) => {
-			this.handleMediaStreamConnection(ws, req);
+		this.wss.on("connection", (ws) => {
+			this.handleConnection(ws);
 		});
 
 		await new Promise<void>((resolve) => {
 			this.wsServer!.listen(port, () => {
-				log.logInfo(`[voice] Media Stream WebSocket server listening on port ${port}`);
+				log.logInfo(`[voice] WebSocket server listening on port ${port}`);
 				resolve();
 			});
 		});
@@ -131,124 +124,23 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 	}
 
 	async stop(): Promise<void> {
-		// Close all active calls
 		for (const [, call] of this.calls) {
 			call.sttSession?.close();
-			call.mediaWs?.close();
+			call.ws?.close();
 		}
 		this.calls.clear();
 
-		if (this.wss) {
-			this.wss.close();
-			this.wss = null;
-		}
-		if (this.wsServer) {
-			this.wsServer.close();
-			this.wsServer = null;
-		}
+		if (this.wss) { this.wss.close(); this.wss = null; }
+		if (this.wsServer) { this.wsServer.close(); this.wsServer = null; }
 	}
 
 	// ==========================================================================
-	// HTTP dispatch — receives Twilio webhooks via Gateway
+	// WebSocket connection handler
 	// ==========================================================================
 
-	dispatch(req: IncomingMessage, res: ServerResponse): void {
-		let body = "";
-		req.on("data", (chunk) => { body += chunk; });
-		req.on("end", () => {
-			this.handleTwilioWebhook(body, res);
-		});
-	}
+	private handleConnection(ws: WebSocket): void {
+		log.logInfo("[voice] New audio stream connection");
 
-	private handleTwilioWebhook(body: string, res: ServerResponse): void {
-		// Parse URL-encoded body from Twilio
-		const params = new URLSearchParams(body);
-		const callSid = params.get("CallSid") || "";
-		const callStatus = params.get("CallStatus") || "";
-		const from = params.get("From") || "";
-		const to = params.get("To") || "";
-
-		log.logInfo(`[voice] Twilio webhook: CallSid=${callSid} Status=${callStatus} From=${from}`);
-
-		if (callStatus === "ringing" || !callStatus) {
-			// Incoming call — answer with TwiML that opens a bidirectional Media Stream
-			this.handleIncomingCall(callSid, from, to, res);
-		} else if (callStatus === "in-progress") {
-			// Call connected — already handled by Media Stream
-			res.writeHead(200, { "Content-Type": "text/xml" });
-			res.end("<Response></Response>");
-		} else if (callStatus === "completed" || callStatus === "failed" || callStatus === "busy" || callStatus === "no-answer") {
-			this.handleCallEnded(callSid, callStatus);
-			res.writeHead(200, { "Content-Type": "text/xml" });
-			res.end("<Response></Response>");
-		} else {
-			res.writeHead(200, { "Content-Type": "text/xml" });
-			res.end("<Response></Response>");
-		}
-	}
-
-	private handleIncomingCall(callSid: string, from: string, to: string, res: ServerResponse): void {
-		log.logInfo(`[voice] Incoming call from ${from} (CallSid: ${callSid})`);
-
-		// Create call session
-		const session: CallSession = {
-			callSid,
-			streamSid: null,
-			from,
-			to,
-			status: "connected",
-			mediaWs: null,
-			sttSession: null,
-			ttsPlaying: false,
-			startedAt: Date.now(),
-		};
-		this.calls.set(callSid, session);
-
-		// Build the WebSocket URL for Twilio Media Streams.
-		// In production via crawdad-cf: wss://crawdad.tinyfat.com/agents/{agentId}/voice/stream
-		// Locally: ws://localhost:8765
-		const streamBase = this.config.streamBaseUrl || "wss://crawdad.tinyfat.com";
-		const agentId = this.config.agentId || "unknown";
-		const streamUrl = agentId !== "unknown"
-			? `${streamBase}/agents/${agentId}/voice/stream`
-			: `ws://localhost:${this.config.mediaWsPort || 8765}`;
-
-		// Respond with TwiML that opens a bidirectional Media Stream.
-		// The <Connect><Stream> opens a WS to our server.
-		// We pass the callSid as a custom parameter so we can correlate.
-		const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-	<Connect>
-		<Stream url="${streamUrl}" name="audio-stream">
-			<Parameter name="callSid" value="${callSid}" />
-		</Stream>
-	</Connect>
-</Response>`;
-
-		res.writeHead(200, { "Content-Type": "text/xml" });
-		res.end(twiml);
-	}
-
-	private handleCallEnded(callSid: string, reason: string): void {
-		const session = this.calls.get(callSid);
-		if (session) {
-			log.logInfo(`[voice] Call ended: ${callSid} (${reason})`);
-			session.status = "ended";
-			session.sttSession?.close();
-			session.mediaWs?.close();
-			this.calls.delete(callSid);
-		}
-	}
-
-	// ==========================================================================
-	// Twilio Media Stream WebSocket handler
-	// ==========================================================================
-
-	private handleMediaStreamConnection(ws: WebSocket, _req: IncomingMessage): void {
-		log.logInfo("[voice] New Media Stream WebSocket connection");
-
-		let callSid: string | null = null;
-		let streamSid: string | null = null;
 		let session: CallSession | null = null;
 
 		ws.on("message", (data) => {
@@ -257,106 +149,83 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 
 				switch (msg.event) {
 					case "connected":
-						log.logInfo("[voice] Media Stream connected");
+						log.logInfo("[voice] Stream connected");
 						break;
 
-					case "start":
-						streamSid = msg.start?.streamSid || msg.streamSid;
-						callSid = msg.start?.customParameters?.callSid || null;
-						log.logInfo(`[voice] Media Stream started: streamSid=${streamSid} callSid=${callSid}`);
+					case "start": {
+						const streamSid = msg.start?.streamSid || msg.streamSid || null;
+						const callSid = msg.start?.customParameters?.callSid || "unknown";
+						const from = msg.start?.customParameters?.from || "unknown";
+						log.logInfo(`[voice] Stream started: streamSid=${streamSid} callSid=${callSid} from=${from}`);
 
-						if (callSid) {
-							session = this.calls.get(callSid) || null;
-							if (session) {
-								session.streamSid = streamSid;
-								session.mediaWs = ws;
-								this.startSttForSession(session);
-							} else {
-								// Call came in via Media Stream before webhook — create session
-								session = {
-									callSid,
-									streamSid,
-									from: "unknown",
-									to: this.config.twilioPhoneNumber,
-									status: "connected",
-									mediaWs: ws,
-									sttSession: null,
-									ttsPlaying: false,
-									startedAt: Date.now(),
-								};
-								this.calls.set(callSid, session);
-								this.startSttForSession(session);
-							}
-						}
+						session = {
+							streamSid,
+							from,
+							callSid,
+							ws,
+							sttSession: null,
+							ttsPlaying: false,
+							startedAt: Date.now(),
+						};
+						this.calls.set(callSid, session);
+						this.startStt(session);
 						break;
+					}
 
 					case "media":
-						// Forward audio to ElevenLabs STT
+						// Forward audio to STT
 						if (session?.sttSession) {
 							session.sttSession.sendAudio(msg.media.payload);
 						}
 						break;
 
 					case "mark":
-						// TTS playback completed for a mark
-						if (session) {
-							session.ttsPlaying = false;
-						}
+						if (session) session.ttsPlaying = false;
 						break;
 
 					case "stop":
-						log.logInfo(`[voice] Media Stream stopped: ${streamSid}`);
+						log.logInfo(`[voice] Stream stopped: ${session?.streamSid}`);
 						if (session) {
 							session.sttSession?.close();
-							session.mediaWs = null;
+							this.calls.delete(session.callSid);
 						}
 						break;
 				}
 			} catch (err) {
-				log.logWarning(`[voice] Failed to parse Media Stream message: ${err}`);
+				log.logWarning(`[voice] Failed to parse message: ${err}`);
 			}
 		});
 
 		ws.on("close", () => {
-			log.logInfo("[voice] Media Stream WebSocket closed");
+			log.logInfo("[voice] Stream WebSocket closed");
 			if (session) {
 				session.sttSession?.close();
-				session.mediaWs = null;
+				this.calls.delete(session.callSid);
 			}
 		});
 
 		ws.on("error", (err) => {
-			log.logWarning(`[voice] Media Stream WebSocket error: ${err.message}`);
+			log.logWarning(`[voice] Stream WebSocket error: ${err.message}`);
 		});
 	}
 
 	// ==========================================================================
-	// STT — speech recognition via ElevenLabs
+	// STT
 	// ==========================================================================
 
-	private startSttForSession(session: CallSession): void {
-		log.logInfo(`[voice] Starting STT for call ${session.callSid}`);
+	private startStt(session: CallSession): void {
+		log.logInfo(`[voice] Starting STT for ${session.callSid}`);
 
-		const sttSession = createSttSession(
+		session.sttSession = createSttSession(
 			this.sttConfig,
-			// onTranscript — complete utterance, trigger agent run
-			(text: string) => {
-				this.handleUtterance(session, text);
-			},
-			// onPartial — interim text (we could use this for "listening" feedback)
+			(text: string) => this.handleUtterance(session, text),
 			undefined,
-			// onError
-			(err: Error) => {
-				log.logWarning(`[voice] STT error for call ${session.callSid}: ${err.message}`);
-			},
+			(err: Error) => log.logWarning(`[voice] STT error: ${err.message}`),
 		);
-
-		session.sttSession = sttSession;
 	}
 
 	private handleUtterance(session: CallSession, text: string): void {
 		if (!text.trim()) return;
-
 		log.logInfo(`[voice] Utterance from ${session.from}: "${text}"`);
 
 		const event: MomEvent = {
@@ -367,42 +236,31 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 			text,
 		};
 
-		// If agent is already running, steer the utterance in
 		if (this.handler.isRunning(this.channelId)) {
 			this.handler.handleSteer(event, this);
 			return;
 		}
 
-		// Otherwise start a new run
 		this.handler.handleEvent(event, this).catch((err) => {
 			log.logWarning(`[voice] handleEvent error: ${err instanceof Error ? err.message : String(err)}`);
 		});
 	}
 
 	// ==========================================================================
-	// TTS — send audio back to caller via Twilio Media Stream
+	// TTS — send audio back through the WebSocket
 	// ==========================================================================
 
 	private async speakToCall(session: CallSession, text: string): Promise<void> {
-		if (!session.mediaWs || session.mediaWs.readyState !== WebSocket.OPEN) {
-			log.logWarning(`[voice] Cannot speak — no active Media Stream for ${session.callSid}`);
-			return;
-		}
-		if (!session.streamSid) {
-			log.logWarning(`[voice] Cannot speak — no streamSid for ${session.callSid}`);
-			return;
-		}
+		if (session.ws.readyState !== WebSocket.OPEN || !session.streamSid) return;
 
 		session.ttsPlaying = true;
 		const sid = session.streamSid;
-		const ws = session.mediaWs;
 		let chunkCount = 0;
 
 		try {
 			await textToSpeechStreaming(text, this.ttsConfig, (base64Audio: string) => {
-				if (ws.readyState !== WebSocket.OPEN) return;
-				// Send audio chunk to Twilio
-				ws.send(JSON.stringify({
+				if (session.ws.readyState !== WebSocket.OPEN) return;
+				session.ws.send(JSON.stringify({
 					event: "media",
 					streamSid: sid,
 					media: { payload: base64Audio },
@@ -410,120 +268,66 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 				chunkCount++;
 			});
 
-			// Send a mark so we know when playback finishes
-			if (ws.readyState === WebSocket.OPEN) {
-				ws.send(JSON.stringify({
+			if (session.ws.readyState === WebSocket.OPEN) {
+				session.ws.send(JSON.stringify({
 					event: "mark",
 					streamSid: sid,
 					mark: { name: `tts-${Date.now()}` },
 				}));
 			}
 
-			log.logInfo(`[voice] TTS sent ${chunkCount} chunks for call ${session.callSid}`);
+			log.logInfo(`[voice] TTS sent ${chunkCount} chunks`);
 		} catch (err) {
 			log.logWarning(`[voice] TTS error: ${err instanceof Error ? err.message : String(err)}`);
 			session.ttsPlaying = false;
 		}
 	}
 
-	/**
-	 * Clear audio buffer (barge-in) — stops any currently playing TTS.
-	 */
-	private clearAudioBuffer(session: CallSession): void {
-		if (!session.mediaWs || session.mediaWs.readyState !== WebSocket.OPEN || !session.streamSid) return;
-		session.mediaWs.send(JSON.stringify({
-			event: "clear",
-			streamSid: session.streamSid,
-		}));
-		session.ttsPlaying = false;
-	}
-
 	// ==========================================================================
-	// PlatformAdapter — message operations
+	// PlatformAdapter interface
 	// ==========================================================================
 
-	async postMessage(channel: string, text: string): Promise<string> {
-		// Find the active call and speak the text
+	// No dispatch — we don't receive HTTP webhooks, just WebSocket audio
+	dispatch = undefined;
+
+	async postMessage(_channel: string, text: string): Promise<string> {
 		const session = this.getActiveCall();
-		if (session) {
-			await this.speakToCall(session, text);
-		}
+		if (session) await this.speakToCall(session, text);
 		return String(Date.now());
 	}
 
-	async updateMessage(_channel: string, _ts: string, _text: string): Promise<void> {
-		// No concept of updating on voice — ignore
-	}
-
-	async deleteMessage(_channel: string, _ts: string): Promise<void> {
-		// No concept of deleting on voice — ignore
-	}
-
-	async postInThread(_channel: string, _threadTs: string, _text: string): Promise<string> {
-		// No threads on voice — ignore
-		return String(Date.now());
-	}
-
-	async uploadFile(_channel: string, _filePath: string, _title?: string): Promise<void> {
-		// Can't upload files on a phone call — ignore
-	}
-
-	// ==========================================================================
-	// Logging
-	// ==========================================================================
+	async updateMessage(): Promise<void> {}
+	async deleteMessage(): Promise<void> {}
+	async postInThread(): Promise<string> { return String(Date.now()); }
+	async uploadFile(): Promise<void> {}
 
 	logToFile(entry: object): void {
-		const logFile = join(this.workingDir, "log.jsonl");
 		try {
-			appendFileSync(logFile, JSON.stringify({ ...entry, adapter: "voice" }) + "\n");
+			appendFileSync(join(this.workingDir, "log.jsonl"), JSON.stringify({ ...entry, adapter: "voice" }) + "\n");
 		} catch { /* ignore */ }
 	}
 
 	logBotResponse(channel: string, text: string, ts: string): void {
-		this.logToFile({
-			type: "bot_response",
-			channel,
-			text: text.substring(0, 500),
-			ts,
-			timestamp: new Date().toISOString(),
-		});
+		this.logToFile({ type: "bot_response", channel, text: text.substring(0, 500), ts, timestamp: new Date().toISOString() });
 	}
-
-	// ==========================================================================
-	// Metadata
-	// ==========================================================================
 
 	private users = new Map<string, UserInfo>();
 
 	getUser(userId: string): UserInfo | undefined {
 		if (!this.users.has(userId)) {
-			// Phone numbers as user IDs
-			this.users.set(userId, {
-				id: userId,
-				userName: userId,
-				displayName: userId,
-			});
+			this.users.set(userId, { id: userId, userName: userId, displayName: userId });
 		}
 		return this.users.get(userId);
 	}
 
-	getChannel(_channelId: string): ChannelInfo | undefined {
+	getChannel(): ChannelInfo | undefined {
 		return { id: this.channelId, name: "phone" };
 	}
 
-	getAllUsers(): UserInfo[] {
-		return Array.from(this.users.values());
-	}
+	getAllUsers(): UserInfo[] { return Array.from(this.users.values()); }
+	getAllChannels(): ChannelInfo[] { return [{ id: this.channelId, name: "phone" }]; }
 
-	getAllChannels(): ChannelInfo[] {
-		return [{ id: this.channelId, name: "phone" }];
-	}
-
-	// ==========================================================================
-	// Context creation
-	// ==========================================================================
-
-	createContext(event: MomEvent, _store: ChannelStore, isEvent?: boolean): MomContext {
+	createContext(event: MomEvent, _store: ChannelStore, _isEvent?: boolean): MomContext {
 		const session = this.getActiveCall();
 
 		return {
@@ -541,59 +345,29 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 			users: this.getAllUsers(),
 
 			respond: async (text: string, shouldLog = true) => {
-				if (!shouldLog) return; // Swallow status lines silently
-				if (!text.trim()) return;
-				// Speak interim responses (e.g. "One moment...")
-				if (session) {
-					await this.speakToCall(session, text);
-				}
+				if (!shouldLog || !text.trim()) return;
+				if (session) await this.speakToCall(session, text);
 			},
 
 			sendFinalResponse: async (text: string) => {
 				if (!text.trim()) return;
-				if (session) {
-					await this.speakToCall(session, text);
-				}
+				if (session) await this.speakToCall(session, text);
 				this.logBotResponse(event.channel, text, String(Date.now()));
 			},
 
-			respondInThread: async (_text: string) => {
-				// No threads on voice
-			},
-
-			setTyping: async (_isTyping: boolean) => {
-				// Could play a subtle tone, but for now no-op
-			},
-
-			uploadFile: async (_filePath: string, _title?: string) => {
-				// Can't upload on a phone call
-			},
-
-			setWorking: async (_working: boolean) => {
-				// No working message concept on voice
-			},
-
-			deleteMessage: async () => {
-				// Can't delete spoken words
-			},
-
-			restartWorking: async (_headerLine?: string) => {
-				// No working message to restart
-			},
+			respondInThread: async () => {},
+			setTyping: async () => {},
+			uploadFile: async () => {},
+			setWorking: async () => {},
+			deleteMessage: async () => {},
+			restartWorking: async () => {},
 		};
 	}
-
-	// ==========================================================================
-	// Event queue (for steered events)
-	// ==========================================================================
 
 	private eventQueue: MomEvent[] = [];
 
 	enqueueEvent(event: MomEvent): boolean {
 		this.eventQueue.push(event);
-		log.logInfo(`[voice] Enqueued event: ${event.text.substring(0, 50)}`);
-
-		// Process next tick
 		setTimeout(() => this.processEventQueue(), 0);
 		return true;
 	}
@@ -602,24 +376,15 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 		while (this.eventQueue.length > 0) {
 			const event = this.eventQueue.shift()!;
 			if (!this.handler.isRunning(this.channelId)) {
-				try {
-					await this.handler.handleEvent(event, this);
-				} catch (err) {
-					log.logWarning(`[voice] Event processing error: ${err instanceof Error ? err.message : String(err)}`);
-				}
+				try { await this.handler.handleEvent(event, this); }
+				catch (err) { log.logWarning(`[voice] Event error: ${err instanceof Error ? err.message : String(err)}`); }
 			}
 		}
 	}
 
-	// ==========================================================================
-	// Helpers
-	// ==========================================================================
-
 	private getActiveCall(): CallSession | null {
 		for (const [, session] of this.calls) {
-			if (session.status === "connected" && session.mediaWs) {
-				return session;
-			}
+			if (session.ws.readyState === WebSocket.OPEN) return session;
 		}
 		return null;
 	}

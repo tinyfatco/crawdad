@@ -164,7 +164,7 @@ function parseArgs(): ParsedArgs {
 		if (process.env.MOM_WEB_CHAT === "true") {
 			adapters.push("web");
 		}
-		if (process.env.MOM_TWILIO_ACCOUNT_SID && process.env.MOM_TWILIO_AUTH_TOKEN && process.env.MOM_ELEVENLABS_API_KEY) {
+		if (process.env.MOM_ELEVENLABS_API_KEY) {
 			adapters.push("voice");
 		}
 		// Default to slack if nothing detected
@@ -295,26 +295,18 @@ function createAdapter(name: string): AdapterWithHandler {
 			return new WebAdapter({ workingDir });
 		}
 		case "voice": {
-			const twilioSid = process.env.MOM_TWILIO_ACCOUNT_SID;
-			const twilioAuth = process.env.MOM_TWILIO_AUTH_TOKEN;
-			const twilioPhone = process.env.MOM_TWILIO_PHONE_NUMBER || "";
 			const elevenLabsKey = process.env.MOM_ELEVENLABS_API_KEY;
 			const elevenLabsVoice = process.env.MOM_ELEVENLABS_VOICE_ID || "pMsXgVXv3BLzUgSXRplE"; // Default: Adam
 			const elevenLabsModel = process.env.MOM_ELEVENLABS_MODEL_ID;
-			const agentId = process.env.MOM_AGENT_ID || "";
-			if (!twilioSid || !twilioAuth || !elevenLabsKey) {
-				console.error("Missing env: MOM_TWILIO_ACCOUNT_SID, MOM_TWILIO_AUTH_TOKEN, MOM_ELEVENLABS_API_KEY");
+			if (!elevenLabsKey) {
+				console.error("Missing env: MOM_ELEVENLABS_API_KEY");
 				process.exit(1);
 			}
 			return new VoiceAdapter({
 				workingDir,
-				twilioAccountSid: twilioSid,
-				twilioAuthToken: twilioAuth,
-				twilioPhoneNumber: twilioPhone,
 				elevenlabsApiKey: elevenLabsKey,
 				elevenlabsVoiceId: elevenLabsVoice,
 				elevenlabsModelId: elevenLabsModel,
-				agentId,
 			});
 		}
 		default:
@@ -516,7 +508,6 @@ const DISPATCH_PATHS: Record<string, string> = {
 	"discord:webhook": "/discord/interactions",
 	"email:webhook": "/email/inbound",
 	"web": "/web/chat",
-	"voice": "/voice/webhook",
 };
 
 // Start gateway — binds HTTP port before adapter init so callers can
