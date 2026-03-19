@@ -943,9 +943,9 @@ function createRunner(
 		async compact(instructions?: string): Promise<CompactResult> {
 			const contextFile = join(awarenessDir, "context.jsonl");
 			// Ensure messages are loaded from context.jsonl before counting
-			const sm = getSessionManager();
 			const currentSession = getSession();
 			if (currentSession.messages.length === 0) {
+				const sm = getSessionManager();
 				const restored = sm.buildSessionContext();
 				if (restored.messages.length > 0) {
 					agent.replaceMessages(restored.messages);
@@ -953,20 +953,22 @@ function createRunner(
 			}
 			const messagesBefore = currentSession.messages.length;
 
+			// Don't compact if context is too small to benefit
+			const info = this.getContextInfo();
+			const MIN_COMPACT_TOKENS = 50000;
+			if (info.contextTokens < MIN_COMPACT_TOKENS && info.contextTokens > 0) {
+				throw new Error(`Context too small to compact (${log.formatTokens(info.contextTokens)} tokens, minimum ${log.formatTokens(MIN_COMPACT_TOKENS)})`);
+			}
+
 			// Archive before compacting
 			await archiveContext(contextFile);
 
 			const result = await getSession().compact(instructions);
 
-			// Reload session state after compact
-			const restoredAfter = sm.buildSessionContext();
-			if (restoredAfter.messages.length > 0) {
-				agent.replaceMessages(restoredAfter.messages);
-			}
-
+			// session.compact() already calls agent.replaceMessages() internally
 			return {
 				messagesBefore,
-				messagesAfter: getSession().messages.length,
+				messagesAfter: currentSession.messages.length,
 				tokensBefore: result.tokensBefore,
 			};
 		},
