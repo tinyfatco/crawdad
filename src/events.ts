@@ -444,7 +444,7 @@ export class EventsWatcher {
 		// Create synthetic event
 		const syntheticEvent: MomIncomingEvent = {
 			type: "mention",
-			channel: event.channelId,
+			channel: event.channelId || "heartbeat",
 			user: "EVENT",
 			text: message,
 			ts: Date.now().toString(),
