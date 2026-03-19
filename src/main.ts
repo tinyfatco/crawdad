@@ -561,11 +561,23 @@ log.logInfo(`[perf] all adapters started: ${(performance.now() - T_BOOT).toFixed
 			mkdirSync(eventsDir, { recursive: true });
 		}
 		const tz = spontaneity.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+		// Convert interval to valid cron (minutes field only supports 0-59)
+		let schedule: string;
+		const mins = spontaneity.intervalMinutes;
+		if (mins < 60) {
+			schedule = `*/${mins} * * * *`;
+		} else if (mins < 1440) {
+			const hours = Math.max(1, Math.round(mins / 60));
+			schedule = `0 */${hours} * * *`;
+		} else {
+			schedule = `0 8 * * *`; // daily at 8am
+		}
+
 		const event = {
 			type: "periodic",
 			channelId: HEARTBEAT_CHANNEL_ID,
 			text: "[heartbeat] Spontaneous reflection",
-			schedule: `*/${spontaneity.intervalMinutes} * * * *`,
+			schedule,
 			timezone: tz,
 			spontaneity: spontaneity.spontaneity,
 			quietHours: spontaneity.quietHours,
