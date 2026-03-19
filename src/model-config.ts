@@ -31,6 +31,11 @@ const FIREWORKS_ALIAS_TO_MODEL_ID: Record<string, string> = {
 	"deepseek-r1": "accounts/fireworks/models/deepseek-v3p1",
 	kimi: "accounts/fireworks/models/kimi-k2p5",
 	"kimi-k2p5": "accounts/fireworks/models/kimi-k2p5",
+	glm: "accounts/fireworks/models/glm-5",
+	"glm-5": "accounts/fireworks/models/glm-5",
+	glm5: "accounts/fireworks/models/glm-5",
+	"glm-4p7": "accounts/fireworks/models/glm-4p7",
+	glm4: "accounts/fireworks/models/glm-4p7",
 };
 
 /**
@@ -63,6 +68,24 @@ const FIREWORKS_MODELS = [
 		input: ["text"] as ("text" | "image")[],
 		cost: { input: 0.60, output: 3.00, cacheRead: 0.10, cacheWrite: 0 },
 		contextWindow: 262144,
+		maxTokens: 32768,
+	},
+	{
+		id: "accounts/fireworks/models/glm-5",
+		name: "GLM-5 (Fireworks)",
+		reasoning: false,
+		input: ["text"] as ("text" | "image")[],
+		cost: { input: 1.00, output: 3.20, cacheRead: 0.20, cacheWrite: 0 },
+		contextWindow: 202752,
+		maxTokens: 32768,
+	},
+	{
+		id: "accounts/fireworks/models/glm-4p7",
+		name: "GLM-4.7 (Fireworks)",
+		reasoning: false,
+		input: ["text"] as ("text" | "image")[],
+		cost: { input: 0.60, output: 2.20, cacheRead: 0.30, cacheWrite: 0 },
+		contextWindow: 202752,
 		maxTokens: 32768,
 	},
 ];
