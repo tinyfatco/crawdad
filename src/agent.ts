@@ -942,8 +942,16 @@ function createRunner(
 
 		async compact(instructions?: string): Promise<CompactResult> {
 			const contextFile = join(awarenessDir, "context.jsonl");
-			const messagesBefore = getSession().messages.length;
-			const info = this.getContextInfo();
+			// Ensure messages are loaded from context.jsonl before counting
+			const sm = getSessionManager();
+			const currentSession = getSession();
+			if (currentSession.messages.length === 0) {
+				const restored = sm.buildSessionContext();
+				if (restored.messages.length > 0) {
+					agent.replaceMessages(restored.messages);
+				}
+			}
+			const messagesBefore = currentSession.messages.length;
 
 			// Archive before compacting
 			await archiveContext(contextFile);
@@ -951,10 +959,9 @@ function createRunner(
 			const result = await getSession().compact(instructions);
 
 			// Reload session state after compact
-			const sm = getSessionManager();
-			const restored = sm.buildSessionContext();
-			if (restored.messages.length > 0) {
-				agent.replaceMessages(restored.messages);
+			const restoredAfter = sm.buildSessionContext();
+			if (restoredAfter.messages.length > 0) {
+				agent.replaceMessages(restoredAfter.messages);
 			}
 
 			return {
@@ -966,7 +973,16 @@ function createRunner(
 
 		async clear(): Promise<{ messagesCleared: number }> {
 			const contextFile = join(awarenessDir, "context.jsonl");
-			const messagesCleared = getSession().messages.length;
+			// Ensure messages are loaded from context.jsonl before counting
+			const sm = getSessionManager();
+			const currentSession = getSession();
+			if (currentSession.messages.length === 0) {
+				const restored = sm.buildSessionContext();
+				if (restored.messages.length > 0) {
+					agent.replaceMessages(restored.messages);
+				}
+			}
+			const messagesCleared = currentSession.messages.length;
 
 			// Archive before clearing
 			await archiveContext(contextFile);
