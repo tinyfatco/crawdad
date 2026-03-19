@@ -11,6 +11,7 @@ import type { PlatformAdapter } from "./adapters/types.js";
 import type { AgentRunner } from "./agent.js";
 import { findModel, listModels, resolveModel } from "./model-config.js";
 import * as log from "./log.js";
+import { formatUsageSummary, formatTokens } from "./log.js";
 
 /**
  * Handle a slash command. Returns true if the command was handled.
@@ -182,19 +183,17 @@ async function handleContextCommand(
 
 	const info = runner.getContextInfo();
 
-	const formatTokens = (count: number): string => {
-		if (count < 1000) return count.toString();
-		if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-		if (count < 1000000) return `${Math.round(count / 1000)}k`;
-		return `${(count / 1000000).toFixed(1)}M`;
-	};
-
 	const lines = [
 		`*Context*`,
 		`Model: ${info.provider}/${info.model}`,
 		`Window: ${formatTokens(info.contextTokens)} / ${formatTokens(info.contextWindow)} (${info.contextPercent.toFixed(1)}%)`,
 		`Messages: ${info.messageCount}`,
 	];
+
+	if (info.usage) {
+		lines.push("");
+		lines.push(formatUsageSummary(info.usage, info.contextTokens, info.contextWindow));
+	}
 
 	await platform.postMessage(channelId, lines.join("\n"));
 }

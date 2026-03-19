@@ -185,26 +185,31 @@ export function logAgentError(ctx: LogContext | "system", error: string): void {
 	console.log(chalk.dim(indented));
 }
 
-// Usage summary
-export function logUsageSummary(
-	ctx: LogContext,
-	usage: {
-		input: number;
-		output: number;
-		cacheRead: number;
-		cacheWrite: number;
-		cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
-	},
+// Shared token formatting
+export function formatTokens(count: number): string {
+	if (count < 1000) return count.toString();
+	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+	if (count < 1000000) return `${Math.round(count / 1000)}k`;
+	return `${(count / 1000000).toFixed(1)}M`;
+}
+
+export interface UsageData {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+}
+
+/**
+ * Format a usage summary for display in chat.
+ * Used by both the post-run thread message and /context command.
+ */
+export function formatUsageSummary(
+	usage: UsageData,
 	contextTokens?: number,
 	contextWindow?: number,
 ): string {
-	const formatTokens = (count: number): string => {
-		if (count < 1000) return count.toString();
-		if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-		if (count < 1000000) return `${Math.round(count / 1000)}k`;
-		return `${(count / 1000000).toFixed(1)}M`;
-	};
-
 	const lines: string[] = [];
 	lines.push("*Usage Summary*");
 	lines.push(`Tokens: ${usage.input.toLocaleString()} in, ${usage.output.toLocaleString()} out`);
@@ -222,8 +227,17 @@ export function logUsageSummary(
 				: ""),
 	);
 	lines.push(`*Total: $${usage.cost.total.toFixed(4)}*`);
+	return lines.join("\n");
+}
 
-	const summary = lines.join("\n");
+// Usage summary (logs to console + returns formatted string)
+export function logUsageSummary(
+	ctx: LogContext,
+	usage: UsageData,
+	contextTokens?: number,
+	contextWindow?: number,
+): string {
+	const summary = formatUsageSummary(usage, contextTokens, contextWindow);
 
 	// Log to console
 	console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} 💰 Usage`));

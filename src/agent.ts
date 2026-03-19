@@ -38,6 +38,13 @@ export interface ContextInfo {
 	messageCount: number;
 	contextTokens: number;
 	contextPercent: number;
+	usage?: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+	};
 }
 
 export interface AgentRunner {
@@ -879,17 +886,32 @@ function createRunner(
 			const currentModel = resolveModel(workspaceDir, modelRegistry);
 			const contextWindow = currentModel?.contextWindow || 200000;
 
-			// Force session init so we can read persisted messages
+			// Ensure messages are loaded from context.jsonl
+			const sm = getSessionManager();
 			const currentSession = getSession();
+			if (currentSession.messages.length === 0) {
+				const restored = sm.buildSessionContext();
+				if (restored.messages.length > 0) {
+					agent.replaceMessages(restored.messages);
+				}
+			}
 			const messages = currentSession.messages;
 
 			// Find last assistant message with usage data
 			let contextTokens = 0;
+			let usage: ContextInfo["usage"] = undefined;
 			for (let i = messages.length - 1; i >= 0; i--) {
 				const m = messages[i] as any;
 				if (m.role === "assistant" && m.usage) {
 					contextTokens = m.usage.input + m.usage.output +
 						(m.usage.cacheRead || 0) + (m.usage.cacheWrite || 0);
+					usage = {
+						input: m.usage.input || 0,
+						output: m.usage.output || 0,
+						cacheRead: m.usage.cacheRead || 0,
+						cacheWrite: m.usage.cacheWrite || 0,
+						cost: m.usage.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					};
 					break;
 				}
 			}
@@ -903,6 +925,7 @@ function createRunner(
 				messageCount: messages.length,
 				contextTokens,
 				contextPercent,
+				usage,
 			};
 		},
 	};
