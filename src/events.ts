@@ -11,20 +11,20 @@ import * as log from "./log.js";
 
 export interface ImmediateEvent {
 	type: "immediate";
-	channelId: string;
+	channelId?: string;
 	text: string;
 }
 
 export interface OneShotEvent {
 	type: "one-shot";
-	channelId: string;
+	channelId?: string;
 	text: string;
 	at: string; // ISO 8601 with timezone offset
 }
 
 export interface PeriodicEvent {
 	type: "periodic";
-	channelId: string;
+	channelId?: string;
 	text: string;
 	schedule: string; // cron syntax
 	timezone: string; // IANA timezone
@@ -270,19 +270,21 @@ export class EventsWatcher {
 	private parseEvent(content: string, filename: string): ScheduledEvent | null {
 		const data = JSON.parse(content);
 
-		if (!data.type || !data.channelId || !data.text) {
-			throw new Error(`Missing required fields (type, channelId, text) in ${filename}`);
+		if (!data.type || !data.text) {
+			throw new Error(`Missing required fields (type, text) in ${filename}`);
 		}
+
+		const channelId = data.channelId || "heartbeat";
 
 		switch (data.type) {
 			case "immediate":
-				return { type: "immediate", channelId: data.channelId, text: data.text };
+				return { type: "immediate", channelId, text: data.text };
 
 			case "one-shot":
 				if (!data.at) {
 					throw new Error(`Missing 'at' field for one-shot event in ${filename}`);
 				}
-				return { type: "one-shot", channelId: data.channelId, text: data.text, at: data.at };
+				return { type: "one-shot", channelId, text: data.text, at: data.at };
 
 			case "periodic":
 				if (!data.schedule) {
@@ -293,7 +295,7 @@ export class EventsWatcher {
 				}
 				return {
 					type: "periodic",
-					channelId: data.channelId,
+					channelId,
 					text: data.text,
 					schedule: data.schedule,
 					timezone: data.timezone,
@@ -506,18 +508,20 @@ export function createEventsWatcher(workspaceDir: string, adapters: PlatformAdap
 export function parseEventContent(content: string): ScheduledEvent | null {
 	try {
 		const data = JSON.parse(content);
-		if (!data.type || !data.channelId || !data.text) return null;
+		if (!data.type || !data.text) return null;
+
+		const channelId = data.channelId || "heartbeat";
 
 		switch (data.type) {
 			case "immediate":
-				return { type: "immediate", channelId: data.channelId, text: data.text };
+				return { type: "immediate", channelId, text: data.text };
 			case "one-shot":
 				if (!data.at) return null;
-				return { type: "one-shot", channelId: data.channelId, text: data.text, at: data.at };
+				return { type: "one-shot", channelId, text: data.text, at: data.at };
 			case "periodic":
 				if (!data.schedule || !data.timezone) return null;
 				return {
-					type: "periodic", channelId: data.channelId, text: data.text,
+					type: "periodic", channelId, text: data.text,
 					schedule: data.schedule, timezone: data.timezone,
 					spontaneity: data.spontaneity, quietHours: data.quietHours,
 				};

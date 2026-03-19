@@ -206,9 +206,11 @@ ${workspacePath}/
 
 ## Events
 JSON files in \`${workspacePath}/events/\`. Three types:
-- \`{"type": "immediate", "channelId": "...", "text": "..."}\` — triggers immediately, auto-deletes
-- \`{"type": "one-shot", "channelId": "...", "text": "...", "at": "ISO8601+offset"}\` — triggers once at time, auto-deletes
-- \`{"type": "periodic", "channelId": "...", "text": "...", "schedule": "cron", "timezone": "${tz}"}\` — recurring, persists until deleted
+- \`{"type": "immediate", "text": "..."}\` — triggers immediately, auto-deletes
+- \`{"type": "one-shot", "text": "...", "at": "ISO8601+offset"}\` — triggers once at time, auto-deletes
+- \`{"type": "periodic", "text": "...", "schedule": "cron", "timezone": "${tz}"}\` — recurring, persists until deleted
+
+Do NOT specify \`channelId\` — events run in the heartbeat channel by default. If the task needs to reach a specific channel (email, Telegram, Slack), use \`set_working_channel\` during execution.
 
 Use unique filenames (include timestamp suffix). Max 5 queued events.
 Triggered events appear as: \`[EVENT:filename.json:type:time] text\`
