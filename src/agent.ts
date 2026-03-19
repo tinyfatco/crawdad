@@ -12,8 +12,9 @@ import {
 	SessionManager,
 	type Skill,
 } from "@mariozechner/pi-coding-agent";
-import { existsSync, readFileSync, statSync } from "fs";
-import { mkdir, writeFile } from "fs/promises";
+import { randomUUID } from "crypto";
+import { existsSync, readFileSync, statSync, writeFileSync } from "fs";
+import { copyFile, mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import type { ChannelInfo, MomContext, UserInfo } from "./adapters/types.js";
 import { MomSettingsManager } from "./context.js";
@@ -47,6 +48,12 @@ export interface ContextInfo {
 	};
 }
 
+export interface CompactResult {
+	messagesBefore: number;
+	messagesAfter: number;
+	tokensBefore: number;
+}
+
 export interface AgentRunner {
 	run(
 		ctx: MomContext,
@@ -58,6 +65,10 @@ export interface AgentRunner {
 	steer(text: string): void;
 	/** Get current context diagnostics */
 	getContextInfo(): ContextInfo;
+	/** Compact context — summarize old messages, keep recent */
+	compact(instructions?: string): Promise<CompactResult>;
+	/** Clear context entirely — archive and start fresh */
+	clear(): Promise<{ messagesCleared: number }>;
 }
 
 
@@ -928,7 +939,68 @@ function createRunner(
 				usage,
 			};
 		},
+
+		async compact(instructions?: string): Promise<CompactResult> {
+			const contextFile = join(awarenessDir, "context.jsonl");
+			const messagesBefore = getSession().messages.length;
+			const info = this.getContextInfo();
+
+			// Archive before compacting
+			await archiveContext(contextFile);
+
+			const result = await getSession().compact(instructions);
+
+			// Reload session state after compact
+			const sm = getSessionManager();
+			const restored = sm.buildSessionContext();
+			if (restored.messages.length > 0) {
+				agent.replaceMessages(restored.messages);
+			}
+
+			return {
+				messagesBefore,
+				messagesAfter: getSession().messages.length,
+				tokensBefore: result.tokensBefore,
+			};
+		},
+
+		async clear(): Promise<{ messagesCleared: number }> {
+			const contextFile = join(awarenessDir, "context.jsonl");
+			const messagesCleared = getSession().messages.length;
+
+			// Archive before clearing
+			await archiveContext(contextFile);
+
+			// Truncate context.jsonl
+			writeFileSync(contextFile, "", "utf-8");
+
+			// Reset in-memory state
+			agent.replaceMessages([]);
+			sessionManager = null;
+			session = null;
+
+			log.logInfo(`[awareness] Context cleared (${messagesCleared} messages archived)`);
+			return { messagesCleared };
+		},
 	};
+}
+
+/**
+ * Archive context.jsonl to awareness/history/<date>/<uuid>.jsonl
+ */
+async function archiveContext(contextFile: string): Promise<void> {
+	if (!existsSync(contextFile)) return;
+	const stat = statSync(contextFile);
+	if (stat.size === 0) return;
+
+	const now = new Date();
+	const dateStr = now.toISOString().slice(0, 10); // YYYY-MM-DD
+	const historyDir = join(contextFile, "..", "history", dateStr);
+	await mkdir(historyDir, { recursive: true });
+
+	const archivePath = join(historyDir, `${randomUUID()}.jsonl`);
+	await copyFile(contextFile, archivePath);
+	log.logInfo(`[awareness] Archived context to ${archivePath}`);
 }
 
 /**

@@ -36,6 +36,12 @@ export async function handleSlashCommand(
 		case "/context":
 			await handleContextCommand(channelId, platform, runner);
 			return true;
+		case "/compact":
+			await handleCompactCommand(parts.slice(1), channelId, platform, runner);
+			return true;
+		case "/clear":
+			await handleClearCommand(channelId, platform, runner);
+			return true;
 		default:
 			return false;
 	}
@@ -196,4 +202,53 @@ async function handleContextCommand(
 	}
 
 	await platform.postMessage(channelId, lines.join("\n"));
+}
+
+async function handleCompactCommand(
+	args: string[],
+	channelId: string,
+	platform: PlatformAdapter,
+	runner?: AgentRunner,
+): Promise<void> {
+	if (!runner) {
+		await platform.postMessage(channelId, "_No runner available_");
+		return;
+	}
+
+	await platform.postMessage(channelId, "_Compacting context..._");
+
+	try {
+		const instructions = args.length > 0 ? args.join(" ") : undefined;
+		const result = await runner.compact(instructions);
+
+		await platform.postMessage(
+			channelId,
+			`_Compacted: ${result.messagesBefore} → ${result.messagesAfter} messages (${formatTokens(result.tokensBefore)} tokens summarized)_`,
+		);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		await platform.postMessage(channelId, `_Compact failed: ${msg}_`);
+	}
+}
+
+async function handleClearCommand(
+	channelId: string,
+	platform: PlatformAdapter,
+	runner?: AgentRunner,
+): Promise<void> {
+	if (!runner) {
+		await platform.postMessage(channelId, "_No runner available_");
+		return;
+	}
+
+	try {
+		const result = await runner.clear();
+		await platform.postMessage(
+			channelId,
+			`_Context cleared (${result.messagesCleared} messages archived)_`,
+		);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		await platform.postMessage(channelId, `_Clear failed: ${msg}_`);
+	}
 }
