@@ -548,32 +548,34 @@ await Promise.all(adapters.map(async (adapter, i) => {
 }));
 log.logInfo(`[perf] all adapters started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
-// Seed heartbeat event file if spontaneity is enabled and no heartbeat.json exists
+// Write heartbeat event file from settings.json on every boot (settings is authoritative)
 {
-	const { existsSync, mkdirSync, writeFileSync } = await import("fs");
+	const { existsSync, mkdirSync, writeFileSync, unlinkSync } = await import("fs");
 	const settings = new MomSettingsManager(workingDir);
 	const spontaneity = settings.getSpontaneitySettings();
+	const eventsDir = join(workingDir, "events");
+	const heartbeatFile = join(eventsDir, "heartbeat.json");
 
 	if (spontaneity.enabled) {
-		const eventsDir = join(workingDir, "events");
-		const heartbeatFile = join(eventsDir, "heartbeat.json");
-		if (!existsSync(heartbeatFile)) {
-			if (!existsSync(eventsDir)) {
-				mkdirSync(eventsDir, { recursive: true });
-			}
-			const tz = spontaneity.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-			const event = {
-				type: "periodic",
-				channelId: HEARTBEAT_CHANNEL_ID,
-				text: "[heartbeat] Spontaneous reflection",
-				schedule: `*/${spontaneity.intervalMinutes} * * * *`,
-				timezone: tz,
-				spontaneity: spontaneity.spontaneity,
-				quietHours: spontaneity.quietHours,
-			};
-			writeFileSync(heartbeatFile, JSON.stringify(event, null, 2), "utf-8");
-			log.logInfo(`Seeded heartbeat.json (every ${spontaneity.intervalMinutes}min, spontaneity=${spontaneity.spontaneity})`);
+		if (!existsSync(eventsDir)) {
+			mkdirSync(eventsDir, { recursive: true });
 		}
+		const tz = spontaneity.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+		const event = {
+			type: "periodic",
+			channelId: HEARTBEAT_CHANNEL_ID,
+			text: "[heartbeat] Spontaneous reflection",
+			schedule: `*/${spontaneity.intervalMinutes} * * * *`,
+			timezone: tz,
+			spontaneity: spontaneity.spontaneity,
+			quietHours: spontaneity.quietHours,
+		};
+		writeFileSync(heartbeatFile, JSON.stringify(event, null, 2), "utf-8");
+		log.logInfo(`Wrote heartbeat.json (every ${spontaneity.intervalMinutes}min, spontaneity=${spontaneity.spontaneity}, tz=${tz})`);
+	} else if (existsSync(heartbeatFile)) {
+		// Spontaneity disabled — remove heartbeat event file
+		unlinkSync(heartbeatFile);
+		log.logInfo("Removed heartbeat.json (spontaneity disabled)");
 	}
 }
 
