@@ -8,6 +8,7 @@ import { SlackSocketAdapter } from "./adapters/slack-socket.js";
 import { SlackWebhookAdapter } from "./adapters/slack-webhook.js";
 import { TelegramPollingAdapter } from "./adapters/telegram-polling.js";
 import { TelegramWebhookAdapter } from "./adapters/telegram-webhook.js";
+import { VoiceAdapter } from "./adapters/voice.js";
 import { WebAdapter } from "./adapters/web.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
@@ -44,6 +45,7 @@ function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): st
 			if (/^-?\d+$/.test(channelId)) return `telegram:${ch.name}`;
 			if (channelId.startsWith("email-")) return `email:${channelId.replace("email-", "")}`;
 			if (channelId.startsWith("web-")) return `web:${ch.name}`;
+			if (channelId.startsWith("voice-")) return `voice:${ch.name}`;
 			if (channelId === "heartbeat") return `heartbeat:${ch.name}`;
 			return ch.name;
 		}
@@ -55,6 +57,7 @@ function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): st
 	if (/^-?\d+$/.test(channelId)) return `telegram:${channelId}`;
 	if (channelId.startsWith("email-")) return `email:${channelId.replace("email-", "")}`;
 	if (channelId.startsWith("web-")) return `web:${channelId}`;
+	if (channelId.startsWith("voice-")) return `voice:${channelId}`;
 	return channelId;
 }
 
@@ -160,6 +163,9 @@ function parseArgs(): ParsedArgs {
 		}
 		if (process.env.MOM_WEB_CHAT === "true") {
 			adapters.push("web");
+		}
+		if (process.env.MOM_TWILIO_ACCOUNT_SID && process.env.MOM_TWILIO_AUTH_TOKEN && process.env.MOM_ELEVENLABS_API_KEY) {
+			adapters.push("voice");
 		}
 		// Default to slack if nothing detected
 		if (adapters.length === 0) {
@@ -288,8 +294,31 @@ function createAdapter(name: string): AdapterWithHandler {
 		case "web": {
 			return new WebAdapter({ workingDir });
 		}
+		case "voice": {
+			const twilioSid = process.env.MOM_TWILIO_ACCOUNT_SID;
+			const twilioAuth = process.env.MOM_TWILIO_AUTH_TOKEN;
+			const twilioPhone = process.env.MOM_TWILIO_PHONE_NUMBER || "";
+			const elevenLabsKey = process.env.MOM_ELEVENLABS_API_KEY;
+			const elevenLabsVoice = process.env.MOM_ELEVENLABS_VOICE_ID || "pMsXgVXv3BLzUgSXRplE"; // Default: Adam
+			const elevenLabsModel = process.env.MOM_ELEVENLABS_MODEL_ID;
+			const agentId = process.env.MOM_AGENT_ID || "";
+			if (!twilioSid || !twilioAuth || !elevenLabsKey) {
+				console.error("Missing env: MOM_TWILIO_ACCOUNT_SID, MOM_TWILIO_AUTH_TOKEN, MOM_ELEVENLABS_API_KEY");
+				process.exit(1);
+			}
+			return new VoiceAdapter({
+				workingDir,
+				twilioAccountSid: twilioSid,
+				twilioAuthToken: twilioAuth,
+				twilioPhoneNumber: twilioPhone,
+				elevenlabsApiKey: elevenLabsKey,
+				elevenlabsVoiceId: elevenLabsVoice,
+				elevenlabsModelId: elevenLabsModel,
+				agentId,
+			});
+		}
 		default:
-			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord:webhook', 'email:webhook', or 'web'.`);
+			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord:webhook', 'email:webhook', 'web', or 'voice'.`);
 			process.exit(1);
 	}
 }
@@ -487,6 +516,7 @@ const DISPATCH_PATHS: Record<string, string> = {
 	"discord:webhook": "/discord/interactions",
 	"email:webhook": "/email/inbound",
 	"web": "/web/chat",
+	"voice": "/voice/webhook",
 };
 
 // Start gateway — binds HTTP port before adapter init so callers can
