@@ -21,6 +21,38 @@ const DEFAULT_MODEL_ID = "claude-sonnet-4-6";
  * Friendly aliases for Fireworks-backed models.
  * Includes legacy aliases for backwards compatibility.
  */
+/**
+ * Friendly aliases for Anthropic models.
+ */
+const ANTHROPIC_ALIAS_TO_MODEL_ID: Record<string, string> = {
+	opus: "claude-opus-4-6",
+	sonnet: "claude-sonnet-4-6",
+	haiku: "claude-haiku-4-5-20251001",
+	"opus-4.6": "claude-opus-4-6",
+	"sonnet-4.6": "claude-sonnet-4-6",
+	"haiku-4.5": "claude-haiku-4-5-20251001",
+};
+
+/**
+ * Friendly aliases for OpenAI models.
+ */
+const OPENAI_ALIAS_TO_MODEL_ID: Record<string, string> = {
+	gpt5: "gpt-5.4",
+	"gpt-5": "gpt-5.4",
+	"gpt-5.4": "gpt-5.4",
+	codex: "codex-5.3",
+	"codex-5.3": "codex-5.3",
+};
+
+/**
+ * Anthropic models to show in /model list (filter out the long tail of old models).
+ */
+const ANTHROPIC_LISTED_MODELS = new Set([
+	"claude-opus-4-6",
+	"claude-sonnet-4-6",
+	"claude-haiku-4-5-20251001",
+]);
+
 const FIREWORKS_ALIAS_TO_MODEL_ID: Record<string, string> = {
 	minimax: "accounts/fireworks/models/minimax-m2p5",
 	"minimax-m2p1": "accounts/fireworks/models/minimax-m2p5",
@@ -211,9 +243,24 @@ export function findModel(
 
 	const allModels = getRegistryModels(workingDir, modelRegistry);
 
-	// Friendly aliases first (e.g. /model minimax)
-	const alias = resolveFireworksAliasModel(allModels, q);
-	if (alias) return alias;
+	// Friendly aliases first (e.g. /model minimax, /model opus, /model gpt5)
+	const fwAlias = resolveFireworksAliasModel(allModels, q);
+	if (fwAlias) return fwAlias;
+
+	// Anthropic aliases
+	const anthropicModelId = ANTHROPIC_ALIAS_TO_MODEL_ID[q];
+	if (anthropicModelId) {
+		const m = findExactModel(allModels, "anthropic", anthropicModelId);
+		if (m) return m;
+	}
+
+	// OpenAI aliases
+	const openaiModelId = OPENAI_ALIAS_TO_MODEL_ID[q];
+	if (openaiModelId) {
+		const m = findExactModel(allModels, "openai", openaiModelId) ||
+			findExactModel(allModels, "openai-codex", openaiModelId);
+		if (m) return m;
+	}
 
 	// Provider/model queries (supports nested IDs like openrouter/minimax/minimax-m2.1)
 	if (q.includes("/")) {
@@ -264,12 +311,20 @@ export function listModels(
 	modelRegistry?: ModelRegistry,
 ): Array<{ provider: string; id: string; name: string; api: string }> {
 	const registry = modelRegistry || createWorkspaceModelRegistry(workingDir);
-	return registry.getAvailable().map((model) => ({
-		provider: model.provider,
-		id: model.id,
-		name: model.name,
-		api: model.api,
-	}));
+	return registry.getAvailable()
+		.filter((model) => {
+			// For Anthropic, only show the models people actually want
+			if (model.provider === "anthropic") {
+				return ANTHROPIC_LISTED_MODELS.has(model.id);
+			}
+			return true;
+		})
+		.map((model) => ({
+			provider: model.provider,
+			id: model.id,
+			name: model.name,
+			api: model.api,
+		}));
 }
 
 function readSettings(workingDir: string): { defaultProvider?: string; defaultModel?: string } {
