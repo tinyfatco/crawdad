@@ -593,6 +593,10 @@ await Promise.all(adapters.map(async (adapter, i) => {
 		if (path) {
 			gateway.markReady(path);
 		}
+		// Discord: also mark /discord/messages as ready
+		if (adapterName === "discord:webhook") {
+			gateway.markReady("/discord/messages");
+		}
 		log.logInfo(`[perf] ${adapter.name} started: ${(performance.now() - t).toFixed(0)}ms`);
 	} catch (err) {
 		log.logWarning(`[${adapter.name}] adapter.start() failed, skipping: ${err instanceof Error ? err.message : String(err)}`);
