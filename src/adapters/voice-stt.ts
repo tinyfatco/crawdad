@@ -123,7 +123,8 @@ export function createSttSession(
 			if (!isConnected || !ws || ws.readyState !== WebSocket.OPEN) return;
 			ws.send(JSON.stringify({
 				message_type: "input_audio_chunk",
-				audio_chunk: base64Payload,
+				audio_base_64: base64Payload,
+				commit: false,
 			}));
 		},
 
