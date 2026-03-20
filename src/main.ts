@@ -296,7 +296,7 @@ function createAdapter(name: string): AdapterWithHandler {
 		}
 		case "voice": {
 			const elevenLabsKey = process.env.MOM_ELEVENLABS_API_KEY;
-			const elevenLabsVoice = process.env.MOM_ELEVENLABS_VOICE_ID || "pMsXgVXv3BLzUgSXRplE"; // Default: Adam
+			const elevenLabsVoice = process.env.MOM_ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM"; // Default: Rachel
 			const elevenLabsModel = process.env.MOM_ELEVENLABS_MODEL_ID;
 			if (!elevenLabsKey) {
 				console.error("Missing env: MOM_ELEVENLABS_API_KEY");
