@@ -105,20 +105,49 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 	async start(): Promise<void> {
 		if (!this.handler) throw new Error("VoiceAdapter: handler not set");
 
-		const port = this.config.wsPort || 8765;
-		this.wsServer = createServer();
-		this.wss = new WebSocketServer({ server: this.wsServer });
+		// Check if main.ts already bound port 8765 (early server for cold-start readiness)
+		const early = (globalThis as any).__voiceEarlyServer as {
+			server: Server; wss: WebSocketServer; pendingConnections: WebSocket[];
+		} | undefined;
 
-		this.wss.on("connection", (ws) => {
-			this.handleConnection(ws);
-		});
+		if (early) {
+			// Take over the early server
+			this.wsServer = early.server;
+			this.wss = early.wss;
 
-		await new Promise<void>((resolve) => {
-			this.wsServer!.listen(port, () => {
-				log.logInfo(`[voice] WebSocket server listening on port ${port}`);
-				resolve();
+			// Wire up new connections
+			this.wss.on("connection", (ws) => {
+				this.handleConnection(ws);
 			});
-		});
+
+			// Handle any connections that arrived before we were ready
+			for (const ws of early.pendingConnections) {
+				if (ws.readyState === WebSocket.OPEN) {
+					log.logInfo("[voice] Adopting early connection");
+					this.handleConnection(ws);
+				}
+			}
+			early.pendingConnections.length = 0;
+			delete (globalThis as any).__voiceEarlyServer;
+
+			log.logInfo("[voice] Took over early WebSocket server on port 8765");
+		} else {
+			// No early server — start our own
+			const port = this.config.wsPort || 8765;
+			this.wsServer = createServer();
+			this.wss = new WebSocketServer({ server: this.wsServer });
+
+			this.wss.on("connection", (ws) => {
+				this.handleConnection(ws);
+			});
+
+			await new Promise<void>((resolve) => {
+				this.wsServer!.listen(port, () => {
+					log.logInfo(`[voice] WebSocket server listening on port ${port}`);
+					resolve();
+				});
+			});
+		}
 
 		log.logInfo("Voice adapter ready");
 	}

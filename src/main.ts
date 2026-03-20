@@ -541,6 +541,33 @@ gateway.registerGet("/schedule", async (_req, res) => {
 await gateway.start(parsedArgs.port);
 log.logInfo(`[perf] gateway listening: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
+// Start voice WebSocket server early (port 8765) so it's ready before adapters init.
+// The voice adapter will attach its handler when it starts. This ensures the port is
+// bound immediately so the orchestrator's readiness check passes during cold start.
+if (parsedArgs.adapters.includes("voice")) {
+	const { createServer } = await import("http");
+	const { WebSocketServer } = await import("ws");
+	const earlyWsServer = createServer();
+	const earlyWss = new WebSocketServer({ server: earlyWsServer });
+
+	// Hold connections until the voice adapter is ready to handle them
+	const pendingConnections: import("ws").WebSocket[] = [];
+	earlyWss.on("connection", (ws) => {
+		log.logInfo("[voice-early] Connection received, holding until adapter ready");
+		pendingConnections.push(ws);
+	});
+
+	await new Promise<void>((resolve) => {
+		earlyWsServer.listen(8765, () => {
+			log.logInfo("[voice-early] Port 8765 bound (pre-adapter)");
+			resolve();
+		});
+	});
+
+	// Expose for the voice adapter to take over
+	(globalThis as any).__voiceEarlyServer = { server: earlyWsServer, wss: earlyWss, pendingConnections };
+}
+
 // Register routes first (so gateway can accept traffic), then start adapters in parallel.
 // Each adapter starts independently — a slow Slack backfill doesn't block Telegram.
 for (let i = 0; i < adapters.length; i++) {
