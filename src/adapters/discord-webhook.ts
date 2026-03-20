@@ -55,7 +55,23 @@ export class DiscordWebhookAdapter extends DiscordBase {
 		req.on("data", (chunk: Buffer) => chunks.push(chunk));
 		req.on("end", async () => {
 			const rawBody = Buffer.concat(chunks).toString("utf-8");
+			const url = req.url || "";
 
+			// Route: /discord/messages — Gateway relay MESSAGE_CREATE (trusted, no sig verification)
+			if (url.includes("/discord/messages")) {
+				res.writeHead(200, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ ok: true }));
+
+				try {
+					const payload = JSON.parse(rawBody);
+					await this.handleGatewayMessage(payload);
+				} catch (err) {
+					log.logWarning("[discord] handleGatewayMessage error", err instanceof Error ? err.message : String(err));
+				}
+				return;
+			}
+
+			// Route: /discord/interactions — standard Interactions webhook
 			// Skip verification if crawdad-cf already verified
 			const devVerified = req.headers["x-crawdad-dev-verified"] === "true";
 
@@ -113,6 +129,69 @@ export class DiscordWebhookAdapter extends DiscordBase {
 			res.writeHead(200, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ type: 1 }));
 		});
+	}
+
+	// ==========================================================================
+	// Gateway relay message handler (MESSAGE_CREATE from discord-gateway)
+	// ==========================================================================
+
+	private async handleGatewayMessage(payload: {
+		type: string;
+		channelId: string;
+		guildId: string | null;
+		author: { id: string; username: string; discriminator?: string };
+		content: string;
+		messageId: string;
+		isDM: boolean;
+		timestamp: string;
+	}): Promise<void> {
+		const { channelId, author, content, messageId, isDM } = payload;
+
+		if (!content.trim()) return;
+
+		log.logInfo(`[discord] Gateway message: ${isDM ? "DM" : "@mention"} from ${author.username}: ${content.substring(0, 80)}`);
+
+		// Track user
+		this.users.set(author.id, { id: author.id, userName: author.username, displayName: author.username });
+
+		// Track channel
+		this.channels.set(channelId, { id: channelId, name: channelId });
+
+		const momEvent: MomEvent = {
+			type: isDM ? "dm" : "mention",
+			channel: channelId,
+			ts: messageId,
+			user: author.id,
+			text: stripDiscordMentions(content),
+		};
+
+		// Log user message
+		this.logToFile({
+			date: new Date().toISOString(),
+			ts: messageId,
+			channel: `discord:${isDM ? "DM" : channelId}`,
+			channelId,
+			user: author.id,
+			userName: author.username,
+			text: content,
+			attachments: [],
+			isBot: false,
+		});
+
+		// Check for stop
+		if (content.toLowerCase().trim() === "stop") {
+			if (this.handler.isRunning(channelId)) {
+				this.handler.handleStop(channelId, this);
+			}
+			return;
+		}
+
+		// Steer into active run or start new one
+		if (this.handler.isRunning(channelId)) {
+			this.handler.handleSteer(momEvent, this);
+		} else {
+			this.enqueueWork(channelId, () => this.handler.handleEvent(momEvent, this));
+		}
 	}
 
 	// ==========================================================================

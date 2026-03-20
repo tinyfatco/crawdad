@@ -577,6 +577,10 @@ for (let i = 0; i < adapters.length; i++) {
 
 	if (path && adapter.dispatch) {
 		gateway.register(path, (req, res) => adapter.dispatch!(req, res));
+		// Discord: also register /discord/messages for Gateway relay traffic
+		if (adapterName === "discord:webhook") {
+			gateway.register("/discord/messages", (req, res) => adapter.dispatch!(req, res));
+		}
 	}
 }
 
