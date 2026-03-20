@@ -136,6 +136,7 @@ export async function textToSpeechStreaming(
 		}, 30000);
 
 		ws.on("open", () => {
+			log.logInfo(`[voice-tts] WebSocket open, sending text: "${text.substring(0, 50)}"`);
 			ws.send(JSON.stringify({
 				text: " ",
 				voice_settings: {
@@ -155,6 +156,10 @@ export async function textToSpeechStreaming(
 		ws.on("message", (data) => {
 			try {
 				const msg = JSON.parse(data.toString());
+				// Log first message and any errors for debugging
+				if (msg.error || msg.message) {
+					log.logWarning(`[voice-tts] Response: ${JSON.stringify(msg).substring(0, 300)}`);
+				}
 				if (msg.audio) {
 					onChunk(msg.audio);
 				}
@@ -170,6 +175,7 @@ export async function textToSpeechStreaming(
 		});
 
 		ws.on("error", (err) => {
+			log.logWarning(`[voice-tts] WebSocket error: ${err.message}`);
 			if (!resolved) {
 				clearTimeout(timeout);
 				resolved = true;
@@ -177,7 +183,8 @@ export async function textToSpeechStreaming(
 			}
 		});
 
-		ws.on("close", () => {
+		ws.on("close", (code, reason) => {
+			log.logInfo(`[voice-tts] WebSocket closed: ${code} ${reason}`);
 			if (!resolved) {
 				clearTimeout(timeout);
 				resolved = true;
