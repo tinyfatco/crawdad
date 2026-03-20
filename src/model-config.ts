@@ -254,11 +254,11 @@ export function findModel(
 		if (m) return m;
 	}
 
-	// OpenAI aliases
+	// OpenAI aliases — prefer openai-codex provider (subscription auth)
 	const openaiModelId = OPENAI_ALIAS_TO_MODEL_ID[q];
 	if (openaiModelId) {
-		const m = findExactModel(allModels, "openai", openaiModelId) ||
-			findExactModel(allModels, "openai-codex", openaiModelId);
+		const m = findExactModel(allModels, "openai-codex", openaiModelId) ||
+			findExactModel(allModels, "openai", openaiModelId);
 		if (m) return m;
 	}
 
