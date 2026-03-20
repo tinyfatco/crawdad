@@ -373,9 +373,9 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 			channels: this.getAllChannels(),
 			users: this.getAllUsers(),
 
-			respond: async (text: string, shouldLog = true) => {
-				if (!shouldLog || !text.trim()) return;
-				if (session) await this.speakToCall(session, text);
+			respond: async (_text: string, _shouldLog = true) => {
+				// Don't TTS interim responses (thinking, tool status, etc.)
+				// Only sendFinalResponse gets spoken aloud
 			},
 
 			sendFinalResponse: async (text: string) => {
