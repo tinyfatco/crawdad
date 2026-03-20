@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync } from "fs";
+import { appendFileSync, existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
@@ -306,6 +306,21 @@ When mentioning users, use <@userId> format.`;
 	}
 
 	// ==========================================================================
+	// Settings
+	// ==========================================================================
+
+	protected readVerboseSetting(): boolean {
+		try {
+			const settingsPath = join(this.workingDir, "settings.json");
+			if (existsSync(settingsPath)) {
+				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+				return settings.verbose !== false; // default true
+			}
+		} catch { /* ignore */ }
+		return true;
+	}
+
+	// ==========================================================================
 	// Context creation
 	// ==========================================================================
 
@@ -326,6 +341,9 @@ When mentioning users, use <@userId> format.`;
 
 		// If we have an interaction token, use interaction-based messaging.
 		// Otherwise fall back to channel-based messaging (e.g., from events system).
+		// Escape underscores in status text so Discord doesn't interpret them as italics
+		const formatStatus = (text: string) => `*${text.replace(/_/g, "\\_")}*`;
+
 		const ops = interactionToken
 			? {
 				post: async (ch: string, text: string) => {
@@ -343,7 +361,7 @@ When mentioning users, use <@userId> format.`;
 					if (id === "@original") return; // Don't delete the deferred response
 					await this.deleteFollowup(interactionToken, id);
 				},
-				formatStatus: (text: string) => `*${text}*`,
+				formatStatus,
 				throttleMs: 0,
 				maxLength: this.maxMessageLength,
 			}
@@ -351,7 +369,7 @@ When mentioning users, use <@userId> format.`;
 				post: (ch: string, text: string) => this.postMessage(ch, text),
 				update: (ch: string, id: string, text: string) => this.updateMessage(ch, id, text),
 				delete: (ch: string, id: string) => this.deleteMessage(ch, id),
-				formatStatus: (text: string) => `*${text}*`,
+				formatStatus,
 				throttleMs: 0,
 				maxLength: this.maxMessageLength,
 			};
@@ -366,6 +384,7 @@ When mentioning users, use <@userId> format.`;
 				users: this.getAllUsers(),
 				channelName: this.channels.get(event.channel)?.name,
 				isEvent,
+				verbose: this.readVerboseSetting(),
 			},
 			{
 				logBotResponse: (ch, text, ts) => this.logBotResponse(ch, text, ts),
