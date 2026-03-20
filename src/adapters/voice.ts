@@ -358,6 +358,7 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 
 	createContext(event: MomEvent, _store: ChannelStore, _isEvent?: boolean): MomContext {
 		const session = this.getActiveCall();
+		let lastSpokenText: string | null = null;
 
 		return {
 			message: {
@@ -380,7 +381,10 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 				// Tool call labels (shouldLog=false, starts with _→) — speak them
 				if (!shouldLog && text.startsWith("_→")) {
 					const clean = text.replace(/^_→\s*/, "").replace(/_$/, "").trim();
-					if (clean) await this.speakToCall(session, clean);
+					if (clean) {
+						lastSpokenText = clean;
+						await this.speakToCall(session, clean);
+					}
 					return;
 				}
 
@@ -391,12 +395,16 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 				if (text.includes("💭")) return;
 
 				// Everything else with shouldLog=true — speak it
+				lastSpokenText = text;
 				await this.speakToCall(session, text);
 			},
 
 			sendFinalResponse: async (text: string) => {
 				if (!text.trim()) return;
-				if (session) await this.speakToCall(session, text);
+				// Skip if this is the same text we already spoke via respond()
+				if (session && text !== lastSpokenText) {
+					await this.speakToCall(session, text);
+				}
 				this.logBotResponse(event.channel, text, String(Date.now()));
 			},
 
