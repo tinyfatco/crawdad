@@ -5,11 +5,14 @@
  * "heartbeat" channel, runs the agent with a no-op context (output goes to
  * awareness/context.jsonl via the runner, not to any external platform).
  *
+ * On each heartbeat, scans connected Slack channels for recent unresponded
+ * messages and includes them in the reflection prompt.
+ *
  * Scheduling is handled by the events system (periodic event file in events/).
  * This adapter just accepts and runs the events headlessly.
  */
 
-import { appendFileSync } from "fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
@@ -38,6 +41,79 @@ If nothing needs attention, note a brief thought and go back to sleep. Avoid say
 
 	constructor(config: { workingDir: string }) {
 		this.workingDir = config.workingDir;
+	}
+
+	// -- Channel scanning for unresponded messages --
+
+	private get lastScanFile(): string {
+		return join(this.workingDir, ".heartbeat-last-scan");
+	}
+
+	private getLastScanTs(): string {
+		try {
+			if (existsSync(this.lastScanFile)) {
+				return readFileSync(this.lastScanFile, "utf-8").trim();
+			}
+		} catch {}
+		// Default: 1 hour ago
+		return String(Math.floor((Date.now() - 3600000) / 1000));
+	}
+
+	private setLastScanTs(): void {
+		try {
+			writeFileSync(this.lastScanFile, String(Math.floor(Date.now() / 1000)));
+		} catch {}
+	}
+
+	/**
+	 * Scan Slack channels for messages since last heartbeat.
+	 * Returns formatted string of unresponded messages, or empty string.
+	 */
+	private async scanSlackChannels(): Promise<string> {
+		const botToken = process.env.MOM_SLACK_BOT_TOKEN;
+		if (!botToken) return "";
+
+		const since = this.getLastScanTs();
+		const messages: string[] = [];
+
+		try {
+			// Get channels the bot is in
+			const chansResp = await fetch("https://slack.com/api/conversations.list?types=public_channel,private_channel,im,mpim&exclude_archived=true&limit=50", {
+				headers: { authorization: `Bearer ${botToken}` },
+			});
+			const chansData = await chansResp.json() as { ok: boolean; channels?: Array<{ id: string; name?: string; is_im?: boolean }> };
+			if (!chansData.ok || !chansData.channels) return "";
+
+			// Check each channel for recent messages
+			for (const chan of chansData.channels) {
+				try {
+					const histResp = await fetch(`https://slack.com/api/conversations.history?channel=${chan.id}&oldest=${since}&limit=20`, {
+						headers: { authorization: `Bearer ${botToken}` },
+					});
+					const histData = await histResp.json() as { ok: boolean; messages?: Array<{ text: string; user?: string; bot_id?: string; ts: string; subtype?: string }> };
+					if (!histData.ok || !histData.messages) continue;
+
+					// Filter out join/leave/system subtypes but keep bot messages
+					const relevantMsgs = histData.messages.filter(m => !m.subtype || m.subtype === "bot_message");
+					if (relevantMsgs.length === 0) continue;
+
+					const chanLabel = chan.name ? `#${chan.name}` : `DM:${chan.id}`;
+					for (const m of relevantMsgs.reverse()) {
+						const sender = m.user ? `<@${m.user}>` : (m.bot_id ? `bot:${m.bot_id}` : "unknown");
+						messages.push(`[${chanLabel}] ${sender}: ${m.text}`);
+					}
+				} catch {
+					// Skip channels we can't read
+				}
+			}
+		} catch (err) {
+			log.logWarning("Heartbeat Slack scan failed", err instanceof Error ? err.message : String(err));
+		}
+
+		this.setLastScanTs();
+
+		if (messages.length === 0) return "";
+		return `\n\n## Recent channel activity since last check\nThe following messages arrived in your Slack channels. Decide if any warrant a response — use \`set_working_channel\` to reply.\n\n${messages.join("\n")}`;
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -126,6 +202,12 @@ If nothing needs attention, note a brief thought and go back to sleep. Avoid say
 			while (this.queue.length > 0) {
 				const event = this.queue.shift()!;
 				try {
+					// Scan connected channels for unresponded messages
+					const channelActivity = await this.scanSlackChannels();
+					if (channelActivity) {
+						event.text = event.text + channelActivity;
+						log.logInfo(`Heartbeat: injected channel activity (${channelActivity.split("\n").length - 3} messages)`);
+					}
 					await this.handler.handleEvent(event, this, true);
 				} catch (err) {
 					log.logWarning("Heartbeat run failed", err instanceof Error ? err.message : String(err));
