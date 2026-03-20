@@ -8,6 +8,7 @@ import { SlackSocketAdapter } from "./adapters/slack-socket.js";
 import { SlackWebhookAdapter } from "./adapters/slack-webhook.js";
 import { TelegramPollingAdapter } from "./adapters/telegram-polling.js";
 import { TelegramWebhookAdapter } from "./adapters/telegram-webhook.js";
+import { VoiceAdapter } from "./adapters/voice.js";
 import { WebAdapter } from "./adapters/web.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
@@ -44,6 +45,7 @@ function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): st
 			if (/^-?\d+$/.test(channelId)) return `telegram:${ch.name}`;
 			if (channelId.startsWith("email-")) return `email:${channelId.replace("email-", "")}`;
 			if (channelId.startsWith("web-")) return `web:${ch.name}`;
+			if (channelId.startsWith("voice-")) return `voice:${ch.name}`;
 			if (channelId === "heartbeat") return `heartbeat:${ch.name}`;
 			return ch.name;
 		}
@@ -55,6 +57,7 @@ function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): st
 	if (/^-?\d+$/.test(channelId)) return `telegram:${channelId}`;
 	if (channelId.startsWith("email-")) return `email:${channelId.replace("email-", "")}`;
 	if (channelId.startsWith("web-")) return `web:${channelId}`;
+	if (channelId.startsWith("voice-")) return `voice:${channelId}`;
 	return channelId;
 }
 
@@ -160,6 +163,9 @@ function parseArgs(): ParsedArgs {
 		}
 		if (process.env.MOM_WEB_CHAT === "true") {
 			adapters.push("web");
+		}
+		if (process.env.MOM_ELEVENLABS_API_KEY) {
+			adapters.push("voice");
 		}
 		// Default to slack if nothing detected
 		if (adapters.length === 0) {
@@ -288,8 +294,23 @@ function createAdapter(name: string): AdapterWithHandler {
 		case "web": {
 			return new WebAdapter({ workingDir });
 		}
+		case "voice": {
+			const elevenLabsKey = process.env.MOM_ELEVENLABS_API_KEY;
+			const elevenLabsVoice = process.env.MOM_ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM"; // Default: Rachel
+			const elevenLabsModel = process.env.MOM_ELEVENLABS_MODEL_ID;
+			if (!elevenLabsKey) {
+				console.error("Missing env: MOM_ELEVENLABS_API_KEY");
+				process.exit(1);
+			}
+			return new VoiceAdapter({
+				workingDir,
+				elevenlabsApiKey: elevenLabsKey,
+				elevenlabsVoiceId: elevenLabsVoice,
+				elevenlabsModelId: elevenLabsModel,
+			});
+		}
 		default:
-			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord:webhook', 'email:webhook', or 'web'.`);
+			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord:webhook', 'email:webhook', 'web', or 'voice'.`);
 			process.exit(1);
 	}
 }
@@ -519,6 +540,33 @@ gateway.registerGet("/schedule", async (_req, res) => {
 
 await gateway.start(parsedArgs.port);
 log.logInfo(`[perf] gateway listening: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
+
+// Start voice WebSocket server early (port 8765) so it's ready before adapters init.
+// The voice adapter will attach its handler when it starts. This ensures the port is
+// bound immediately so the orchestrator's readiness check passes during cold start.
+if (parsedArgs.adapters.includes("voice")) {
+	const { createServer } = await import("http");
+	const { WebSocketServer } = await import("ws");
+	const earlyWsServer = createServer();
+	const earlyWss = new WebSocketServer({ server: earlyWsServer });
+
+	// Hold connections until the voice adapter is ready to handle them
+	const pendingConnections: import("ws").WebSocket[] = [];
+	earlyWss.on("connection", (ws) => {
+		log.logInfo("[voice-early] Connection received, holding until adapter ready");
+		pendingConnections.push(ws);
+	});
+
+	await new Promise<void>((resolve) => {
+		earlyWsServer.listen(8765, () => {
+			log.logInfo("[voice-early] Port 8765 bound (pre-adapter)");
+			resolve();
+		});
+	});
+
+	// Expose for the voice adapter to take over
+	(globalThis as any).__voiceEarlyServer = { server: earlyWsServer, wss: earlyWss, pendingConnections };
+}
 
 // Register routes first (so gateway can accept traffic), then start adapters in parallel.
 // Each adapter starts independently — a slow Slack backfill doesn't block Telegram.
