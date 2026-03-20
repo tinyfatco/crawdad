@@ -68,7 +68,10 @@ export function createSttSession(
 		try {
 			const msg = JSON.parse(data.toString());
 
-			switch (msg.type) {
+			// ElevenLabs uses message_type (not type) in their protocol
+			const msgType = msg.message_type || msg.type;
+
+			switch (msgType) {
 				case "session_started":
 					log.logInfo(`[voice-stt] Session started: ${msg.session_id}`);
 					break;
@@ -94,10 +97,9 @@ export function createSttSession(
 				default:
 					// Log all unhandled message types for debugging
 					log.logInfo(`[voice-stt] Message: ${JSON.stringify(msg).substring(0, 300)}`);
-					// Errors come as various types ending in "_error"
-					if (msg.type?.includes("error")) {
-						log.logWarning(`[voice-stt] Error: ${msg.type} - ${msg.message || JSON.stringify(msg)}`);
-						onError?.(new Error(`STT error: ${msg.type}`));
+					if (msgType?.includes("error")) {
+						log.logWarning(`[voice-stt] Error: ${msgType} - ${msg.message || msg.error || JSON.stringify(msg)}`);
+						onError?.(new Error(`STT error: ${msgType}`));
 					}
 					break;
 			}
@@ -120,7 +122,7 @@ export function createSttSession(
 		sendAudio(base64Payload: string) {
 			if (!isConnected || !ws || ws.readyState !== WebSocket.OPEN) return;
 			ws.send(JSON.stringify({
-				type: "input_audio_chunk",
+				message_type: "input_audio_chunk",
 				audio_chunk: base64Payload,
 			}));
 		},
