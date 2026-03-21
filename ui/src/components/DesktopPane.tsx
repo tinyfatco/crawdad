@@ -6,30 +6,53 @@
  * pointing at the noVNC HTML client with autoconnect + resize=scale.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { apiUrl } from '../api';
 
 export function DesktopPane() {
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<'loading' | 'starting' | 'ready' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  const retry = useCallback(() => {
+    setStatus('loading');
+    setError(null);
+    setStreamUrl(null);
+    setAttempt((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
 
     async function init() {
       try {
-        // First check desktop status
-        const statusResp = await fetch(apiUrl('/desktop/status'));
-        if (!statusResp.ok) {
-          // Desktop not started yet — try to start it
-          setStatus('starting');
-          const startResp = await fetch(apiUrl('/desktop/start'), { method: 'POST' });
-          if (!startResp.ok) {
-            throw new Error('Failed to start desktop');
+        // Check desktop status — retry up to 5 times during cold start
+        let desktopReady = false;
+        for (let i = 0; i < 5; i++) {
+          const statusResp = await fetch(apiUrl('/desktop/status'));
+          if (statusResp.ok) {
+            const statusData = await statusResp.json();
+            if (statusData.status === 'active') {
+              desktopReady = true;
+              break;
+            }
           }
-          // Wait a moment for Xvfb + x11vnc to initialize
-          await new Promise((r) => setTimeout(r, 2000));
+
+          if (i === 0 && !cancelled) setStatus('starting');
+
+          // Try to start it
+          try {
+            await fetch(apiUrl('/desktop/start'), { method: 'POST' });
+          } catch {
+            // Ignore start errors during retry
+          }
+          await new Promise((r) => setTimeout(r, 3000));
+          if (cancelled) return;
+        }
+
+        if (!desktopReady && !cancelled) {
+          throw new Error('Desktop did not start after retries');
         }
 
         // Get the noVNC stream URL
@@ -38,10 +61,6 @@ export function DesktopPane() {
         const data = await urlResp.json();
 
         if (!cancelled) {
-          // Use the stream URL from the CF sandbox API directly.
-          // It points to a port-based subdomain (e.g., 6080-agent-{id}-xxx.crawdad.tinyfat.com)
-          // which is handled by proxyToSandbox() — no auth needed on that path
-          // since the sandbox SDK manages the subdomain routing.
           setStreamUrl(data.url);
           setStatus('ready');
         }
@@ -55,7 +74,7 @@ export function DesktopPane() {
 
     init();
     return () => { cancelled = true; };
-  }, []);
+  }, [attempt]);
 
   if (status === 'error') {
     return (
@@ -63,11 +82,7 @@ export function DesktopPane() {
         <div className="desktop-placeholder">
           <span className="desktop-placeholder-icon">&#x26A0;</span>
           <span className="desktop-placeholder-text">{error || 'Desktop error'}</span>
-          <button
-            className="terminal-reconnect-btn"
-            onClick={() => { setStatus('loading'); setError(null); }}
-            style={{ marginTop: 8 }}
-          >
+          <button className="terminal-reconnect-btn" onClick={retry} style={{ marginTop: 8 }}>
             Retry
           </button>
         </div>
