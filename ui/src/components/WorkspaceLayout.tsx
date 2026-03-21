@@ -18,7 +18,7 @@ import { DesktopPane } from './DesktopPane';
 import { AwarenessPane } from './AwarenessPane';
 
 export function WorkspaceLayout() {
-  const { config } = useConfig();
+  const { config, isLoading: configLoading } = useConfig();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [awarenessCollapsed, setAwarenessCollapsed] = useState(false);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
@@ -97,6 +97,15 @@ export function WorkspaceLayout() {
   const CenterPanel = () => {
     if (viewingFile) {
       return <FileViewer path={viewingFile} onClose={closeFileViewer} />;
+    }
+    if (configLoading) {
+      return (
+        <div className="desktop-pane">
+          <div className="desktop-placeholder">
+            <span className="tool-spinner" style={{ width: 24, height: 24, borderWidth: 3 }} />
+          </div>
+        </div>
+      );
     }
     if (config.display_mode === 'desktop') {
       return <DesktopPane />;

@@ -21,7 +21,7 @@ export function useConfig() {
   const { data, isLoading, error } = useQuery({
     queryKey: ['config'],
     queryFn: fetchConfig,
-    staleTime: 60_000,
+    staleTime: 0,
     retry: 2,
   });
 
