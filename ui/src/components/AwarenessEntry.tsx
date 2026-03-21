@@ -7,6 +7,33 @@ interface AwarenessEntryProps {
   entry: AwarenessEntryType;
 }
 
+function EventEntry({ channel, label, description, fullDescription }: {
+  channel?: string;
+  label: string;
+  description: string;
+  fullDescription?: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="awareness-entry event-entry">
+      <div className="event-header">
+        {channel && <ChannelBadge channel={channel} />}
+        <span className="event-icon">{'\u25C6'}</span>
+        <span className="event-name">{label}</span>
+      </div>
+      {description && (
+        <div
+          className={`event-desc ${fullDescription ? 'expandable' : ''}`}
+          onClick={fullDescription ? () => setExpanded(!expanded) : undefined}
+        >
+          {expanded ? fullDescription : description}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Strip <session_context>...</session_context> blocks from text */
 function stripSessionContext(text: string): string {
   return text.replace(/\s*<session_context>[\s\S]*?<\/session_context>\s*/g, '');
@@ -97,16 +124,22 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
     const text = entry.strippedText || extractText(entry.content);
 
     // Event triggers (heartbeat, scheduled) — compact indicator
-    const eventMatch = text.match(/^\[EVENT:([^\]]+)\]\s*\[([^\]]+)\]\s*(.*)/);
+    // Formats: [EVENT:name:type:cron] [source] label  OR  [EVENT:name:type:cron] label
+    const eventMatch = text.match(/^\[EVENT:([^:\]]+)[^\]]*\]\s*(?:\[([^\]]+)\]\s*)?([\s\S]*)$/);
     if (eventMatch) {
-      const eventSource = eventMatch[2]; // e.g. "heartbeat"
-      const eventLabel = eventMatch[3] || eventSource; // e.g. "Spontaneous reflection"
+      const eventFile = eventMatch[1].replace(/\.json$/, ''); // e.g. "daily-5am-checkin"
+      const eventSource = eventMatch[2]; // e.g. "heartbeat" (optional)
+      const eventDesc = (eventMatch[3] || '').trim();
+      const label = eventSource || eventFile;
+      // Truncate long descriptions to first sentence
+      const shortDesc = eventDesc.length > 60 ? eventDesc.substring(0, 60) + '...' : eventDesc;
       return (
-        <div className="awareness-entry event-entry">
-          {entry.channel && <ChannelBadge channel={entry.channel} />}
-          <span className="event-icon">{'\u25C6'}</span>
-          <span className="event-label">{eventLabel}</span>
-        </div>
+        <EventEntry
+          channel={entry.channel}
+          label={label}
+          description={shortDesc}
+          fullDescription={eventDesc.length > 60 ? eventDesc : undefined}
+        />
       );
     }
 

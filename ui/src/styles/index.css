@@ -381,26 +381,48 @@ html, body, #root {
   margin: 0 0.4rem;
 }
 
-/* Event triggers — compact inline indicator */
+/* Event triggers — compact indicator with optional description */
 .awareness-entry.event-entry {
   display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.15rem 0.75rem;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.25rem 0.75rem;
   font-size: 0.7rem;
   color: var(--text-muted);
   opacity: 0.7;
 }
 
+.event-header {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
 .event-icon {
-  font-size: 0.5rem;
+  font-size: 0.45rem;
   color: var(--warning);
 }
 
-.event-label {
+.event-name {
   font-family: var(--font-mono);
   font-size: 0.65rem;
   letter-spacing: 0.01em;
+  font-weight: 500;
+}
+
+.event-desc {
+  font-size: 0.65rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+  padding-left: 0.2rem;
+}
+
+.event-desc.expandable {
+  cursor: pointer;
+}
+
+.event-desc.expandable:hover {
+  color: var(--text);
 }
 
 /* Silent responses — minimal dot + label */
