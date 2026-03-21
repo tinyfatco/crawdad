@@ -10,6 +10,7 @@ import { TelegramPollingAdapter } from "./adapters/telegram-polling.js";
 import { TelegramWebhookAdapter } from "./adapters/telegram-webhook.js";
 import { VoiceAdapter } from "./adapters/voice.js";
 import { WebAdapter } from "./adapters/web.js";
+import { WebVoiceBridgeAdapter, handleWebVoiceSession } from "./adapters/web-voice.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
 import { handleSlashCommand } from "./commands.js";
@@ -566,6 +567,29 @@ if (parsedArgs.adapters.includes("voice")) {
 
 	// Expose for the voice adapter to take over
 	(globalThis as any).__voiceEarlyServer = { server: earlyWsServer, wss: earlyWss, pendingConnections };
+}
+
+// Register web voice chat — browser mic → STT → agent → TTS → browser speakers.
+// Always available when ElevenLabs API key is set (no need for --adapter=voice).
+if (process.env.MOM_ELEVENLABS_API_KEY) {
+	const { WebSocketServer } = await import("ws");
+	const wss = new WebSocketServer({ noServer: true });
+	const webVoiceAdapter = new WebVoiceBridgeAdapter(workingDir);
+	webVoiceAdapter.setHandler(handler);
+	adapters.push(webVoiceAdapter as unknown as AdapterWithHandler);
+
+	gateway.registerUpgrade("/voice/stream", (req, socket, head) => {
+		wss.handleUpgrade(req, socket, head, (ws) => {
+			handleWebVoiceSession(ws, {
+				elevenlabsApiKey: process.env.MOM_ELEVENLABS_API_KEY!,
+				elevenlabsVoiceId: process.env.MOM_ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM",
+				elevenlabsModelId: process.env.MOM_ELEVENLABS_MODEL_ID,
+				workingDir,
+			}, handler, webVoiceAdapter);
+		});
+	});
+
+	log.logInfo("[web-voice] Browser voice chat registered on /voice/stream");
 }
 
 // Register routes first (so gateway can accept traffic), then start adapters in parallel.

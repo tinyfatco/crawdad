@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
+import type { Socket } from "net";
 import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync } from "fs";
 import { join, extname, resolve, normalize } from "path";
 import * as log from "./log.js";
@@ -31,9 +32,12 @@ export interface GatewayOptions {
 	workspaceDir?: string;
 }
 
+export type UpgradeHandler = (req: IncomingMessage, socket: Socket, head: Buffer) => void;
+
 export class Gateway {
 	private routes = new Map<string, RouteHandler>();
 	private getRoutes = new Map<string, RouteHandler>();
+	private upgradeRoutes = new Map<string, UpgradeHandler>();
 	private readyRoutes = new Set<string>();
 	private server: Server | null = null;
 	private uiDir: string | null = null;
@@ -63,6 +67,12 @@ export class Gateway {
 	registerGet(path: string, handler: RouteHandler): void {
 		this.getRoutes.set(path, handler);
 		log.logInfo(`[gateway] registered route: GET ${path}`);
+	}
+
+	/** Register a WebSocket upgrade handler (e.g., "/voice/stream") */
+	registerUpgrade(path: string, handler: UpgradeHandler): void {
+		this.upgradeRoutes.set(path, handler);
+		log.logInfo(`[gateway] registered route: UPGRADE ${path}`);
 	}
 
 	/** Mark a route as ready to accept traffic. Until called, the route returns 503. */
@@ -437,9 +447,20 @@ export class Gateway {
 			}
 		});
 
+		// Handle WebSocket upgrades
+		this.server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => {
+			const urlPath = (req.url || "").split("?")[0];
+			const handler = this.upgradeRoutes.get(urlPath);
+			if (handler) {
+				handler(req, socket, head);
+			} else {
+				socket.destroy();
+			}
+		});
+
 		await new Promise<void>((resolve) => {
 			this.server!.listen(port, () => {
-				log.logInfo(`[gateway] listening on port ${port} (${this.routes.size} POST + ${this.getRoutes.size} GET routes${this.uiDir ? " + UI" : ""})`);
+				log.logInfo(`[gateway] listening on port ${port} (${this.routes.size} POST + ${this.getRoutes.size} GET + ${this.upgradeRoutes.size} UPGRADE routes${this.uiDir ? " + UI" : ""})`);
 				resolve();
 			});
 		});

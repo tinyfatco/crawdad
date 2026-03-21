@@ -683,10 +683,15 @@ html, body, #root {
    Input Bar
    ======================================================================== */
 
+.input-bar-row {
+  display: flex;
+  align-items: flex-end;
+  border-top: 1px solid var(--border);
+}
+
 .input-bar {
   width: 100%;
   flex-shrink: 0;
-  border-top: 1px solid var(--border);
 }
 
 .input-container {
@@ -735,6 +740,45 @@ html, body, #root {
 
 .control-button.stop { color: var(--error); }
 .control-button.stop:hover { opacity: 0.9; }
+
+/* ========================================================================
+   Voice Chat
+   ======================================================================== */
+
+.mic-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  margin: 0.25rem 0.5rem 0.25rem 0;
+  transition: color 0.15s;
+}
+
+.mic-button:hover { color: var(--accent); }
+
+.mic-button.active {
+  color: var(--error);
+  animation: mic-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.voice-status {
+  padding: 0.25rem 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-style: italic;
+}
 
 /* ========================================================================
    Error Banner

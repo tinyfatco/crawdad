@@ -14,6 +14,8 @@ export interface SttConfig {
 	vadSilenceThreshold?: number;
 	/** Language code (ISO 639-1), e.g. "en" */
 	languageCode?: string;
+	/** Audio format sent to ElevenLabs (default: ulaw_8000 for telephony) */
+	audioFormat?: string;
 }
 
 export interface SttSession {
@@ -41,10 +43,11 @@ export function createSttSession(
 ): SttSession {
 	const vadThreshold = config.vadSilenceThreshold ?? 1.5;
 	const langCode = config.languageCode ?? "en";
+	const audioFormat = config.audioFormat ?? "ulaw_8000";
 
 	const params = new URLSearchParams({
 		model_id: "scribe_v2_realtime",
-		audio_format: "ulaw_8000",
+		audio_format: audioFormat,
 		commit_strategy: "vad",
 		vad_silence_threshold_secs: String(vadThreshold),
 		language_code: langCode,

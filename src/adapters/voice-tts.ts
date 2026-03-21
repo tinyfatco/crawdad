@@ -12,6 +12,8 @@ export interface TtsConfig {
 	apiKey: string;
 	voiceId: string;
 	modelId?: string;
+	/** Output audio format (default: ulaw_8000 for telephony) */
+	outputFormat?: string;
 }
 
 export interface TtsResult {
@@ -26,8 +28,9 @@ export interface TtsResult {
 export async function textToSpeech(text: string, config: TtsConfig): Promise<TtsResult> {
 	const modelId = config.modelId || "eleven_turbo_v2_5";
 	const voiceId = config.voiceId;
+	const outputFormat = config.outputFormat || "ulaw_8000";
 
-	const url = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${modelId}&output_format=ulaw_8000`;
+	const url = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${modelId}&output_format=${outputFormat}`;
 
 	return new Promise<TtsResult>((resolve, reject) => {
 		const audioChunks: string[] = [];
@@ -117,8 +120,9 @@ export async function textToSpeechStreaming(
 ): Promise<void> {
 	const modelId = config.modelId || "eleven_turbo_v2_5";
 	const voiceId = config.voiceId;
+	const outputFormat = config.outputFormat || "ulaw_8000";
 
-	const url = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${modelId}&output_format=ulaw_8000`;
+	const url = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${modelId}&output_format=${outputFormat}`;
 
 	return new Promise<void>((resolve, reject) => {
 		let resolved = false;

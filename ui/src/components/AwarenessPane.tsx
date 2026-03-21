@@ -8,6 +8,7 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useAwarenessStream } from '../hooks/useAwarenessStream';
 import { useWebChat } from '../hooks/useWebChat';
+import { useVoiceChat } from '../hooks/useVoiceChat';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { InputBar } from './InputBar';
 
@@ -23,7 +24,10 @@ export function AwarenessPane() {
     clearError,
   } = useWebChat();
 
-  const error = chatError || streamError;
+  const voice = useVoiceChat();
+  const isVoiceActive = voice.state !== 'idle' && voice.state !== 'error';
+
+  const error = chatError || streamError || voice.error;
 
   // Dedup: when optimistic entries exist, skip SSE entries that duplicate them.
   // The optimistic entries (userEntry, streamingEntry) are the source of truth
@@ -168,12 +172,42 @@ export function AwarenessPane() {
         </div>
       )}
 
-      <InputBar
-        onSend={sendMessage}
-        onStop={abortStream}
-        disabled={isStreaming}
-        isStreaming={isStreaming}
-      />
+      {isVoiceActive && (
+        <div className="voice-status">
+          <span className="voice-status-text">
+            {voice.state === 'connecting' && 'Connecting...'}
+            {voice.state === 'listening' && (voice.partial || 'Listening...')}
+            {voice.state === 'thinking' && (voice.transcript || 'Thinking...')}
+            {voice.state === 'speaking' && 'Speaking...'}
+          </span>
+        </div>
+      )}
+
+      <div className="input-bar-row">
+        <InputBar
+          onSend={sendMessage}
+          onStop={abortStream}
+          disabled={isStreaming || isVoiceActive}
+          isStreaming={isStreaming}
+        />
+        <button
+          className={`mic-button ${isVoiceActive ? 'active' : ''}`}
+          onClick={isVoiceActive ? voice.stop : voice.start}
+          title={isVoiceActive ? 'Stop voice' : 'Start voice'}
+        >
+          {isVoiceActive ? (
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              <rect x="4" y="4" width="10" height="10" rx="1" fill="currentColor" />
+            </svg>
+          ) : (
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              <rect x="7" y="2" width="4" height="9" rx="2" fill="currentColor" />
+              <path d="M4 8.5a5 5 0 0010 0" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+              <path d="M9 14v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          )}
+        </button>
+      </div>
     </div>
   );
 }
