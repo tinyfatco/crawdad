@@ -38,14 +38,11 @@ export function DesktopPane() {
         const data = await urlResp.json();
 
         if (!cancelled) {
-          // The stream URL comes from the CF sandbox API — it points to a
-          // port-based subdomain on crawdad.tinyfat.com. But we want to proxy
-          // through our own authenticated path. Build a relative VNC URL.
-          const base = window.location.pathname.endsWith('/')
-            ? window.location.pathname.slice(0, -1)
-            : window.location.pathname;
-          const vncUrl = `${base}/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=2000`;
-          setStreamUrl(vncUrl);
+          // Use the stream URL from the CF sandbox API directly.
+          // It points to a port-based subdomain (e.g., 6080-agent-{id}-xxx.crawdad.tinyfat.com)
+          // which is handled by proxyToSandbox() — no auth needed on that path
+          // since the sandbox SDK manages the subdomain routing.
+          setStreamUrl(data.url);
           setStatus('ready');
         }
       } catch (err) {
