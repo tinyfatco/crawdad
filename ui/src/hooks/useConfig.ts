@@ -18,16 +18,17 @@ async function fetchConfig(): Promise<WorkspaceConfig> {
 }
 
 export function useConfig() {
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, isFetching, error } = useQuery({
     queryKey: ['config'],
     queryFn: fetchConfig,
     staleTime: 0,
+    gcTime: 0,
     retry: 2,
   });
 
   return {
     config: data ?? { display_mode: 'terminal' as const, agent_name: 'agent' },
-    isLoading,
+    isLoading: isLoading || (!data && isFetching),
     error: error ? String(error) : null,
   };
 }
