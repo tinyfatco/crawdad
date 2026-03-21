@@ -120,8 +120,18 @@ export function useTerminal(): UseTerminalReturn {
     ws.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
         term.write(new Uint8Array(event.data));
-      } else {
-        term.write(event.data);
+      } else if (typeof event.data === 'string') {
+        // Text messages are JSON control messages from the sandbox PTY — don't render them
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'ready') {
+            // Navigate to /data on connect and clear the screen
+            ws.send(textEncoder.encode('cd /data 2>/dev/null; clear\n'));
+          }
+        } catch {
+          // Not JSON — write as text fallback
+          term.write(event.data);
+        }
       }
     };
 
