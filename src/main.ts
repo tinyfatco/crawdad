@@ -570,26 +570,32 @@ if (parsedArgs.adapters.includes("voice")) {
 }
 
 // Register web voice chat — browser mic → STT → agent → TTS → browser speakers.
+// Runs on its own port (8766) since Cloudflare container proxying requires a dedicated port.
 // Always available when ElevenLabs API key is set (no need for --adapter=voice).
 if (process.env.MOM_ELEVENLABS_API_KEY) {
+	const { createServer: createHttpServer } = await import("http");
 	const { WebSocketServer } = await import("ws");
-	const wss = new WebSocketServer({ noServer: true });
+	const webVoiceServer = createHttpServer();
+	const wss = new WebSocketServer({ server: webVoiceServer });
 	const webVoiceAdapter = new WebVoiceBridgeAdapter(workingDir);
 	webVoiceAdapter.setHandler(handler);
 	adapters.push(webVoiceAdapter as unknown as AdapterWithHandler);
 
-	gateway.registerUpgrade("/voice/stream", (req, socket, head) => {
-		wss.handleUpgrade(req, socket, head, (ws) => {
-			handleWebVoiceSession(ws, {
-				elevenlabsApiKey: process.env.MOM_ELEVENLABS_API_KEY!,
-				elevenlabsVoiceId: process.env.MOM_ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM",
-				elevenlabsModelId: process.env.MOM_ELEVENLABS_MODEL_ID,
-				workingDir,
-			}, handler, webVoiceAdapter);
-		});
+	wss.on("connection", (ws) => {
+		handleWebVoiceSession(ws, {
+			elevenlabsApiKey: process.env.MOM_ELEVENLABS_API_KEY!,
+			elevenlabsVoiceId: process.env.MOM_ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM",
+			elevenlabsModelId: process.env.MOM_ELEVENLABS_MODEL_ID,
+			workingDir,
+		}, handler, webVoiceAdapter);
 	});
 
-	log.logInfo("[web-voice] Browser voice chat registered on /voice/stream");
+	await new Promise<void>((resolve) => {
+		webVoiceServer.listen(8766, () => {
+			log.logInfo("[web-voice] WebSocket server listening on port 8766");
+			resolve();
+		});
+	});
 }
 
 // Register routes first (so gateway can accept traffic), then start adapters in parallel.
