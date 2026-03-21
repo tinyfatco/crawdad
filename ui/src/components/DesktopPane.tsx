@@ -61,9 +61,9 @@ export function DesktopPane() {
           const base = window.location.pathname.endsWith('/')
             ? window.location.pathname.slice(0, -1)
             : window.location.pathname;
-          // path= tells noVNC where to connect WebSocket (must include the full proxy path)
-          const wsPath = `${base}/vnc/websockify`;
-          setStreamUrl(`${base}/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=3000&path=${encodeURIComponent(wsPath)}`);
+          // path= tells noVNC where to connect WebSocket (full proxy path, no leading slash)
+          const wsPath = `${base}/vnc/websockify`.replace(/^\//, '');
+          setStreamUrl(`${base}/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=3000&path=${wsPath}`);
           setStatus('ready');
         }
       } catch (err) {
