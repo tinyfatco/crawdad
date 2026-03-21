@@ -3,7 +3,7 @@
  * Returns display_mode ('terminal' | 'desktop') and agent_name.
  */
 
-import { useQuery } from '@tanstack/react-query';
+import { useState, useEffect } from 'react';
 import { apiUrl } from '../api';
 
 export interface WorkspaceConfig {
@@ -11,24 +11,38 @@ export interface WorkspaceConfig {
   agent_name: string;
 }
 
-async function fetchConfig(): Promise<WorkspaceConfig> {
-  const response = await fetch(apiUrl('/api/config'));
-  if (!response.ok) throw new Error('Failed to fetch config');
-  return response.json();
-}
+const DEFAULT_CONFIG: WorkspaceConfig = { display_mode: 'terminal', agent_name: 'agent' };
 
 export function useConfig() {
-  const { data, isLoading, isFetching, error } = useQuery({
-    queryKey: ['config'],
-    queryFn: fetchConfig,
-    staleTime: 0,
-    gcTime: 0,
-    retry: 2,
-  });
+  const [config, setConfig] = useState<WorkspaceConfig | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const response = await fetch(apiUrl('/api/config'));
+        if (!response.ok) throw new Error('Failed to fetch config');
+        const data = await response.json();
+        if (!cancelled) {
+          setConfig(data);
+          setIsLoading(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Config error');
+          setIsLoading(false);
+        }
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
 
   return {
-    config: data ?? { display_mode: 'terminal' as const, agent_name: 'agent' },
-    isLoading: isLoading || (!data && isFetching),
-    error: error ? String(error) : null,
+    config: config ?? DEFAULT_CONFIG,
+    isLoading,
+    error,
   };
 }
