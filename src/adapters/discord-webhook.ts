@@ -72,26 +72,21 @@ export class DiscordWebhookAdapter extends DiscordBase {
 			}
 
 			// Route: /discord/interactions — standard Interactions webhook
-			// Skip verification if crawdad-cf already verified
-			const devVerified = req.headers["x-crawdad-dev-verified"] === "true";
+			const signature = req.headers["x-signature-ed25519"] as string | undefined;
+			const timestamp = req.headers["x-signature-timestamp"] as string | undefined;
 
-			if (!devVerified) {
-				const signature = req.headers["x-signature-ed25519"] as string | undefined;
-				const timestamp = req.headers["x-signature-timestamp"] as string | undefined;
+			if (!signature || !timestamp) {
+				res.writeHead(401);
+				res.end("Missing signature headers");
+				return;
+			}
 
-				if (!signature || !timestamp) {
-					res.writeHead(401);
-					res.end("Missing signature headers");
-					return;
-				}
-
-				const isValid = await this.verifySignature(timestamp, rawBody, signature);
-				if (!isValid) {
-					log.logWarning("Discord interaction signature verification failed");
-					res.writeHead(401);
-					res.end("Invalid signature");
-					return;
-				}
+			const isValid = await this.verifySignature(timestamp, rawBody, signature);
+			if (!isValid) {
+				log.logWarning("Discord interaction signature verification failed");
+				res.writeHead(401);
+				res.end("Invalid signature");
+				return;
 			}
 
 			let interaction: DiscordInteraction;
