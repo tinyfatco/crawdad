@@ -7,6 +7,11 @@ interface AwarenessEntryProps {
   entry: AwarenessEntryType;
 }
 
+/** Strip <session_context>...</session_context> blocks from text */
+function stripSessionContext(text: string): string {
+  return text.replace(/\s*<session_context>[\s\S]*?<\/session_context>\s*/g, '');
+}
+
 function ToolCallBlock({ block, isRunning, result }: { block: ToolCallContent; isRunning?: boolean; result?: ToolResultContent }) {
   const [expanded, setExpanded] = useState(false);
   const args = block.arguments || {};
@@ -22,7 +27,7 @@ function ToolCallBlock({ block, isRunning, result }: { block: ToolCallContent; i
     ? <span className="tool-spinner" />
     : result?.isError
       ? <span className="tool-status-icon error">!</span>
-      : <span className="tool-status-icon success">-</span>;
+      : <span className="tool-status-icon success">{'\u2713'}</span>;
 
   return (
     <div className={`tool-call ${isRunning ? 'running' : ''} ${result?.isError ? 'error' : ''}`}>
@@ -30,7 +35,7 @@ function ToolCallBlock({ block, isRunning, result }: { block: ToolCallContent; i
         {statusIcon}
         <span className="tool-name">{block.name}</span>
         {summary && <span className="tool-summary">{summary}</span>}
-        <span className="tool-expand">{expanded ? '-' : '+'}</span>
+        <span className="tool-expand">{expanded ? '\u2212' : '+'}</span>
       </button>
       {expanded && (
         <div className="tool-details">
@@ -58,7 +63,7 @@ function ToolResultBlock({ content }: { content: string; isError?: boolean }) {
     <div className="awareness-tool-result">
       <button className="tool-result-toggle" onClick={() => setExpanded(!expanded)}>
         <span className="tool-result-preview">{preview}</span>
-        <span className="tool-expand">{expanded ? '-' : '+'}</span>
+        <span className="tool-expand">{expanded ? '\u2212' : '+'}</span>
       </button>
       {expanded && <pre className="tool-detail-pre">{content}</pre>}
     </div>
@@ -106,26 +111,30 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
     const textBlocks = entry.content.filter((c) => c.type === 'text');
     const toolCallBlocks = entry.content.filter((c) => c.type === 'toolCall') as ToolCallContent[];
     const toolResults = entry.content.filter((c) => c.type === 'toolResult') as ToolResultContent[];
-    const hasText = textBlocks.some((c) => c.type === 'text' && c.text.trim());
+    const hasText = textBlocks.some((c) => c.type === 'text' && stripSessionContext(c.text).trim());
 
-    // Match tool calls to their results
     const getToolResult = (tc: ToolCallContent): ToolResultContent | undefined =>
       toolResults.find((r) => r.toolCallId === tc.id);
 
-    // A tool is "running" if: entry is streaming AND the tool has no result yet
     const isToolRunning = (tc: ToolCallContent): boolean =>
       !!entry.isStreaming && !getToolResult(tc);
+
+    // Skip entries that only have session_context and no other content
+    if (!hasText && thinkingBlocks.length === 0 && toolCallBlocks.length === 0 && !entry.isStreaming) {
+      return null;
+    }
 
     return (
       <div className="awareness-entry assistant-entry">
         {thinkingBlocks.map((block, i) => (
           <ThinkingBlock key={i} text={block.type === 'thinking' ? block.thinking : ''} />
         ))}
-        {textBlocks.map((block, i) =>
-          block.type === 'text' && block.text.trim() ? (
-            <Markdown key={i} content={block.text} />
-          ) : null,
-        )}
+        {textBlocks.map((block, i) => {
+          if (block.type !== 'text') return null;
+          const cleaned = stripSessionContext(block.text);
+          if (!cleaned.trim()) return null;
+          return <Markdown key={i} content={cleaned} />;
+        })}
         {toolCallBlocks.map((block, i) => (
           <ToolCallBlock key={i} block={block} isRunning={isToolRunning(block)} result={getToolResult(block)} />
         ))}

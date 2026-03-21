@@ -85,6 +85,27 @@ export class Gateway {
 		}
 	}
 
+	/** Handle GET /api/config — workspace configuration for the web UI */
+	private handleConfigApi(_req: IncomingMessage, res: ServerResponse): void {
+		let displayMode = "terminal";
+		let agentName = "agent";
+
+		if (this.workspaceDir) {
+			try {
+				const settingsPath = resolve(this.workspaceDir, "settings.json");
+				const raw = readFileSync(settingsPath, "utf-8");
+				const settings = JSON.parse(raw);
+				if (settings.display_mode === "desktop") displayMode = "desktop";
+				if (settings.name) agentName = settings.name;
+			} catch {
+				// No settings.json or parse error — use defaults
+			}
+		}
+
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ display_mode: displayMode, agent_name: agentName }));
+	}
+
 	/** Handle GET /api/files — directory listing */
 	private handleFilesApi(req: IncomingMessage, res: ServerResponse): void {
 		if (!this.workspaceDir) {
@@ -305,6 +326,12 @@ export class Gateway {
 					getHandler(req, res);
 					return;
 				}
+			}
+
+			// Config API
+			if (req.method === "GET" && urlPath === "/api/config") {
+				this.handleConfigApi(req, res);
+				return;
 			}
 
 			// File API routes

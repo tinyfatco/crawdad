@@ -15,12 +15,15 @@ import { parseContextLine, type AwarenessEntry } from '../types';
 export interface UseAwarenessStreamReturn {
   entries: AwarenessEntry[];
   isLoading: boolean;
+  /** True once the initial backlog has been fully flushed */
+  backlogDone: boolean;
   error: string | null;
 }
 
 export function useAwarenessStream(): UseAwarenessStreamReturn {
   const [entries, setEntries] = useState<AwarenessEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [backlogDone, setBacklogDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const backlogDoneRef = useRef(false);
 
@@ -40,6 +43,7 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
       }
       setIsLoading(false);
       backlogDoneRef.current = true;
+      setBacklogDone(true);
     };
 
     es.onmessage = (event) => {
@@ -47,7 +51,7 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
       if (!entry) return;
 
       if (!backlogDoneRef.current) {
-        // During backlog phase: buffer and flush in batches
+        // During backlog phase: buffer and flush in one batch
         backlogBuffer.push(entry);
         if (flushTimer) clearTimeout(flushTimer);
         // Flush after 50ms of no new messages (end of backlog burst)
@@ -60,12 +64,10 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
 
     es.onerror = () => {
       // EventSource auto-reconnects. On first error, mark backlog done
-      // so we don't re-buffer on reconnect.
       if (!backlogDoneRef.current) {
         flushBacklog();
       }
       setError('Connection lost — reconnecting...');
-      // Clear error after reconnect (EventSource does this automatically)
       setTimeout(() => setError(null), 3000);
     };
 
@@ -79,5 +81,5 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     };
   }, []);
 
-  return { entries, isLoading, error };
+  return { entries, isLoading, backlogDone, error };
 }
