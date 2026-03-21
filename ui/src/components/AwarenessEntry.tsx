@@ -94,13 +94,29 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
 
   // User messages
   if (entry.role === 'user') {
+    const text = entry.strippedText || extractText(entry.content);
+
+    // Event triggers (heartbeat, scheduled) — compact indicator
+    const eventMatch = text.match(/^\[EVENT:([^\]]+)\]\s*\[([^\]]+)\]\s*(.*)/);
+    if (eventMatch) {
+      const eventSource = eventMatch[2]; // e.g. "heartbeat"
+      const eventLabel = eventMatch[3] || eventSource; // e.g. "Spontaneous reflection"
+      return (
+        <div className="awareness-entry event-entry">
+          {entry.channel && <ChannelBadge channel={entry.channel} />}
+          <span className="event-icon">{'\u25C6'}</span>
+          <span className="event-label">{eventLabel}</span>
+        </div>
+      );
+    }
+
     return (
       <div className="awareness-entry user-entry">
         <div className="awareness-meta">
           {entry.channel && <ChannelBadge channel={entry.channel} />}
           {entry.userName && <span className="awareness-username">{(entry.channel === 'web' && (entry.userName === 'user' || entry.userName === 'web-user')) ? 'you' : entry.userName}</span>}
         </div>
-        <div className="awareness-user-text">{entry.strippedText || extractText(entry.content)}</div>
+        <div className="awareness-user-text">{text}</div>
       </div>
     );
   }
@@ -111,6 +127,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
     const textBlocks = entry.content.filter((c) => c.type === 'text');
     const toolCallBlocks = entry.content.filter((c) => c.type === 'toolCall') as ToolCallContent[];
     const toolResults = entry.content.filter((c) => c.type === 'toolResult') as ToolResultContent[];
+    const rawText = textBlocks.map((c) => c.type === 'text' ? c.text : '').join('').trim();
     const hasText = textBlocks.some((c) => c.type === 'text' && stripSessionContext(c.text).trim());
 
     const getToolResult = (tc: ToolCallContent): ToolResultContent | undefined =>
@@ -118,6 +135,16 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
 
     const isToolRunning = (tc: ToolCallContent): boolean =>
       !!entry.isStreaming && !getToolResult(tc);
+
+    // [SILENT] responses — minimal indicator
+    if (rawText === '[SILENT]') {
+      return (
+        <div className="awareness-entry silent-entry">
+          <span className="silent-dot" />
+          <span className="silent-label">silent</span>
+        </div>
+      );
+    }
 
     // Skip entries that only have session_context and no other content
     if (!hasText && thinkingBlocks.length === 0 && toolCallBlocks.length === 0 && !entry.isStreaming) {

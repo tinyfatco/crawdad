@@ -175,7 +175,7 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   position: relative;
-  background: #0a0a0a;
+  background: #1a1a1a;
 }
 
 .terminal-container {
@@ -195,7 +195,7 @@ html, body, #root {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  background: rgba(10, 10, 10, 0.85);
+  background: rgba(26, 26, 26, 0.85);
   z-index: 10;
 }
 
@@ -371,6 +371,61 @@ html, body, #root {
   color: var(--text);
   font-size: 0.85rem;
   line-height: 1.5;
+}
+
+/* User message background */
+.awareness-entry.user-entry {
+  background: var(--accent-muted);
+  border-radius: 6px;
+  padding: 0.35rem 0.75rem;
+  margin: 0 0.4rem;
+}
+
+/* Event triggers — compact inline indicator */
+.awareness-entry.event-entry {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.75rem;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.event-icon {
+  font-size: 0.5rem;
+  color: var(--warning);
+}
+
+.event-label {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.01em;
+}
+
+/* Silent responses — minimal dot + label */
+.awareness-entry.silent-entry {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.1rem 0.75rem;
+  opacity: 0.5;
+}
+
+.silent-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.silent-label {
+  font-size: 0.6rem;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .awareness-entry.assistant-entry {
