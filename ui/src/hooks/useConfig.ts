@@ -1,6 +1,7 @@
 /**
  * useConfig — fetch workspace configuration from /api/config.
  * Returns display_mode ('terminal' | 'desktop') and agent_name.
+ * Retries on 503 (workspace not ready during cold start).
  */
 
 import { useState, useEffect } from 'react';
@@ -20,22 +21,35 @@ export function useConfig() {
 
   useEffect(() => {
     let cancelled = false;
+
     async function load() {
-      try {
-        const response = await fetch(apiUrl('/api/config'));
-        if (!response.ok) throw new Error('Failed to fetch config');
-        const data = await response.json();
-        if (!cancelled) {
-          setConfig(data);
-          setIsLoading(false);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Config error');
-          setIsLoading(false);
+      // Retry up to 15 times (covers ~30s cold start)
+      for (let attempt = 0; attempt < 15; attempt++) {
+        if (cancelled) return;
+        try {
+          const response = await fetch(apiUrl('/api/config'));
+          if (response.status === 503) {
+            // Workspace not ready — retry
+            await new Promise((r) => setTimeout(r, 2000));
+            continue;
+          }
+          if (!response.ok) throw new Error('Failed to fetch config');
+          const data = await response.json();
+          if (!cancelled) {
+            setConfig(data);
+            setIsLoading(false);
+          }
+          return;
+        } catch (err) {
+          if (attempt === 14 && !cancelled) {
+            setError(err instanceof Error ? err.message : 'Config error');
+            setIsLoading(false);
+          }
+          await new Promise((r) => setTimeout(r, 2000));
         }
       }
     }
+
     load();
     return () => { cancelled = true; };
   }, []);

@@ -87,23 +87,25 @@ export class Gateway {
 
 	/** Handle GET /api/config — workspace configuration for the web UI */
 	private handleConfigApi(_req: IncomingMessage, res: ServerResponse): void {
-		let displayMode = "terminal";
-		let agentName = "agent";
-
 		if (this.workspaceDir) {
 			try {
 				const settingsPath = resolve(this.workspaceDir, "settings.json");
 				const raw = readFileSync(settingsPath, "utf-8");
 				const settings = JSON.parse(raw);
-				if (settings.display_mode === "desktop") displayMode = "desktop";
-				if (settings.name) agentName = settings.name;
+				res.writeHead(200, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({
+					display_mode: settings.display_mode === "desktop" ? "desktop" : "terminal",
+					agent_name: settings.name || "agent",
+				}));
+				return;
 			} catch {
-				// No settings.json or parse error — use defaults
+				// settings.json not readable yet (R2 not mounted) — tell client to retry
 			}
 		}
 
-		res.writeHead(200, { "Content-Type": "application/json" });
-		res.end(JSON.stringify({ display_mode: displayMode, agent_name: agentName }));
+		// Workspace not ready — return 503 so client retries
+		res.writeHead(503, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: "Workspace not ready" }));
 	}
 
 	/** Handle GET /api/files — directory listing */
