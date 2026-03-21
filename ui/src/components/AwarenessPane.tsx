@@ -183,31 +183,31 @@ export function AwarenessPane() {
         </div>
       )}
 
-      <div className="input-bar-row">
-        <InputBar
-          onSend={sendMessage}
-          onStop={abortStream}
-          disabled={isStreaming || isVoiceActive}
-          isStreaming={isStreaming}
-        />
-        <button
-          className={`mic-button ${isVoiceActive ? 'active' : ''}`}
-          onClick={isVoiceActive ? voice.stop : voice.start}
-          title={isVoiceActive ? 'Stop voice' : 'Start voice'}
-        >
-          {isVoiceActive ? (
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-              <rect x="4" y="4" width="10" height="10" rx="1" fill="currentColor" />
-            </svg>
-          ) : (
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-              <rect x="7" y="2" width="4" height="9" rx="2" fill="currentColor" />
-              <path d="M4 8.5a5 5 0 0010 0" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
-              <path d="M9 14v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          )}
-        </button>
-      </div>
+      <InputBar
+        onSend={sendMessage}
+        onStop={abortStream}
+        disabled={isStreaming || isVoiceActive}
+        isStreaming={isStreaming}
+        extraButtons={
+          <button
+            className={`mic-button ${isVoiceActive ? 'active' : ''}`}
+            onClick={isVoiceActive ? voice.stop : voice.start}
+            title={isVoiceActive ? 'Stop voice' : 'Start voice'}
+          >
+            {isVoiceActive ? (
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <rect x="4" y="4" width="10" height="10" rx="1" fill="currentColor" />
+              </svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <rect x="7" y="2" width="4" height="9" rx="2" fill="currentColor" />
+                <path d="M4 8.5a5 5 0 0010 0" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+                <path d="M9 14v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            )}
+          </button>
+        }
+      />
     </div>
   );
 }

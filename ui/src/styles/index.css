@@ -683,15 +683,10 @@ html, body, #root {
    Input Bar
    ======================================================================== */
 
-.input-bar-row {
-  display: flex;
-  align-items: flex-end;
-  border-top: 1px solid var(--border);
-}
-
 .input-bar {
   width: 100%;
   flex-shrink: 0;
+  border-top: 1px solid var(--border);
 }
 
 .input-container {
@@ -749,15 +744,14 @@ html, body, #root {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 24px;
+  height: 24px;
   border: none;
   border-radius: 4px;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   flex-shrink: 0;
-  margin: 0.25rem 0.5rem 0.25rem 0;
   transition: color 0.15s;
 }
 

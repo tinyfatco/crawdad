@@ -5,9 +5,11 @@ interface InputBarProps {
   onStop?: () => void;
   disabled?: boolean;
   isStreaming?: boolean;
+  /** Optional extra button(s) rendered after the send button */
+  extraButtons?: React.ReactNode;
 }
 
-export function InputBar({ onSend, onStop, disabled, isStreaming }: InputBarProps) {
+export function InputBar({ onSend, onStop, disabled, isStreaming, extraButtons }: InputBarProps) {
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -69,6 +71,7 @@ export function InputBar({ onSend, onStop, disabled, isStreaming }: InputBarProp
             </svg>
           </button>
         )}
+        {extraButtons}
       </div>
     </div>
   );
