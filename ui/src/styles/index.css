@@ -327,6 +327,20 @@ html, body, #root {
   border-color: var(--accent);
 }
 
+.awareness-loading-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.awareness-load-trigger {
+  opacity: 0.5;
+}
+
 /* ========================================================================
    Awareness Entries
    ======================================================================== */

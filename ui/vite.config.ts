@@ -13,6 +13,8 @@ export default defineConfig({
       '/web/chat': 'http://localhost:3002',
       '/api/files': 'http://localhost:3002',
       '/api/file': 'http://localhost:3002',
+      '/awareness/backlog': 'http://localhost:3002',
+      '/awareness/stream': 'http://localhost:3002',
       '/health': 'http://localhost:3002',
       '/status': 'http://localhost:3002',
     },

@@ -219,6 +219,40 @@ export class Gateway {
 		}
 	}
 
+	/** Handle GET /awareness/backlog — returns last N lines of context.jsonl as JSON array */
+	private handleAwarenessBacklog(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.workspaceDir) {
+			res.writeHead(500, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: "No workspace configured" }));
+			return;
+		}
+
+		const contextFile = resolve(this.workspaceDir, "awareness/context.jsonl");
+		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+		const limit = Math.min(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 200);
+		const before = parseInt(url.searchParams.get("before") || "0", 10) || 0;
+
+		let allLines: string[];
+		try {
+			const content = readFileSync(contextFile, "utf-8");
+			allLines = content.split("\n").filter(Boolean);
+		} catch {
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ lines: [], total: 0, offset: 0 }));
+			return;
+		}
+
+		const total = allLines.length;
+		// "before" is a line index — return `limit` lines ending before that index
+		// If before=0 (default), return the last `limit` lines
+		const endIndex = before > 0 ? Math.min(before, total) : total;
+		const startIndex = Math.max(0, endIndex - limit);
+		const slice = allLines.slice(startIndex, endIndex);
+
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ lines: slice, total, offset: startIndex }));
+	}
+
 	/** Handle GET /awareness/stream — SSE endpoint that tails context.jsonl */
 	private handleAwarenessStream(_req: IncomingMessage, res: ServerResponse): void {
 		if (!this.workspaceDir) {
@@ -236,21 +270,15 @@ export class Gateway {
 			"Connection": "keep-alive",
 		});
 
-		// Send backlog — every existing line as an event
+		// Skip backlog — client fetches recent entries via /awareness/backlog instead.
+		// Just record the current file size so the watcher only sends new lines.
 		let currentSize = 0;
 		try {
-			const content = readFileSync(contextFile, "utf-8");
-			currentSize = Buffer.byteLength(content, "utf-8");
-			const lines = content.split("\n").filter(Boolean);
-			for (const line of lines) {
-				res.write(`data: ${line}\n\n`);
-			}
+			const stat = statSync(contextFile);
+			currentSize = stat.size;
 		} catch {
-			// File doesn't exist yet — that's OK, we'll pick it up when it's created
+			// File doesn't exist yet
 		}
-
-		// Track this client's file offset
-		let clientOffset = currentSize;
 
 		// Register client
 		this.awarenessClients.add(res);
@@ -347,7 +375,13 @@ export class Gateway {
 				return;
 			}
 
-			// Awareness stream — SSE endpoint
+			// Awareness backlog — paginated recent entries
+			if (req.method === "GET" && urlPath === "/awareness/backlog") {
+				this.handleAwarenessBacklog(req, res);
+				return;
+			}
+
+			// Awareness stream — SSE endpoint (live updates only, no backlog)
 			if (req.method === "GET" && urlPath === "/awareness/stream") {
 				this.handleAwarenessStream(req, res);
 				return;
