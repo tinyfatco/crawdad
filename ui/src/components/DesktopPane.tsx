@@ -55,13 +55,13 @@ export function DesktopPane() {
           throw new Error('Desktop did not start after retries');
         }
 
-        // Get the noVNC stream URL
-        const urlResp = await fetch(apiUrl('/desktop/stream-url'));
-        if (!urlResp.ok) throw new Error('Failed to get stream URL');
-        const data = await urlResp.json();
-
         if (!cancelled) {
-          setStreamUrl(data.url);
+          // Proxy noVNC through our authenticated /vnc/ path
+          // (CF sandbox subdomain URLs are not publicly resolvable)
+          const base = window.location.pathname.endsWith('/')
+            ? window.location.pathname.slice(0, -1)
+            : window.location.pathname;
+          setStreamUrl(`${base}/vnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=3000`);
           setStatus('ready');
         }
       } catch (err) {
