@@ -100,11 +100,16 @@ export function parseContextLine(line: string): AwarenessEntry | null {
       if (msg.role === 'user' && Array.isArray(msg.content)) {
         const textBlock = msg.content.find((c: ContentBlock) => c.type === 'text') as TextContent | undefined;
         if (textBlock) {
-          const parsed = parseUserPrefix(textBlock.text);
+          // Strip <session_context> before parsing — it precedes the [timestamp] prefix
+          const cleaned = textBlock.text.replace(/\s*<session_context>[\s\S]*?<\/session_context>\s*/g, '').trim();
+          const parsed = parseUserPrefix(cleaned);
           if (parsed) {
             entry.channel = parsed.channel;
             entry.userName = parsed.userName;
             entry.strippedText = parsed.strippedText;
+          } else if (cleaned !== textBlock.text) {
+            // Session context was stripped but no prefix found — use cleaned text
+            entry.strippedText = cleaned;
           }
         }
       }
