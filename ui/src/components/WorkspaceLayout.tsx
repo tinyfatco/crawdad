@@ -21,6 +21,7 @@ export function WorkspaceLayout() {
   const { config, isLoading: configLoading } = useConfig();
   const [displayOverride, setDisplayOverride] = useState<'terminal' | 'desktop' | null>(null);
   const displayMode = displayOverride ?? config.display_mode;
+  const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [awarenessCollapsed, setAwarenessCollapsed] = useState(false);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
@@ -53,6 +54,13 @@ export function WorkspaceLayout() {
 
   const toggleAwareness = () => {
     setAwarenessCollapsed(!awarenessCollapsed);
+  };
+
+  const toggleTheme = () => {
+    const newDark = !isDark;
+    document.documentElement.classList.toggle('dark', newDark);
+    localStorage.setItem('theme', newDark ? 'dark' : 'light');
+    setIsDark(newDark);
   };
 
   // Drag resize handlers
@@ -150,10 +158,13 @@ export function WorkspaceLayout() {
             )}
           </button>
           <button className="header-btn" onClick={toggleAwareness} title="Toggle awareness">
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-              <circle cx="9" cy="9" r="3" stroke="currentColor" strokeWidth="1.5" />
-              <path d="M9 2v2M9 14v2M2 9h2M14 9h2M4.2 4.2l1.4 1.4M12.4 12.4l1.4 1.4M4.2 13.8l1.4-1.4M12.4 5.6l1.4-1.4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="9" y="1" width="6" height="14" rx="1" stroke="currentColor" strokeWidth="1.5" />
+              <path d="M1 4h5M1 8h5M1 12h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
+          </button>
+          <button className="header-btn" onClick={toggleTheme} title="Toggle theme">
+            {isDark ? '\u2600' : '\u263D'}
           </button>
         </div>
       </header>
