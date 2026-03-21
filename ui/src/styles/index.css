@@ -21,12 +21,12 @@
 }
 
 .dark {
-  --bg: #0a0a0a;
-  --bg-secondary: #141414;
-  --surface: #0d0d0d;
-  --text: #e8e8e6;
-  --text-muted: #8a8a88;
-  --border: #222220;
+  --bg: #1a1a1a;
+  --bg-secondary: #222222;
+  --surface: #1e1e1e;
+  --text: #dddddd;
+  --text-muted: #888888;
+  --border: #333333;
   --accent: #4a9eff;
   --accent-muted: rgba(74, 158, 255, 0.1);
 }
@@ -175,7 +175,7 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   position: relative;
-  background: #1a1a1a;
+  background: var(--bg);
 }
 
 .terminal-container {
@@ -195,7 +195,7 @@ html, body, #root {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  background: rgba(26, 26, 26, 0.85);
+  background: rgba(26, 26, 26, 0.9);
   z-index: 10;
 }
 

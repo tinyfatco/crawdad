@@ -50,7 +50,7 @@ export function useTerminal(): UseTerminalReturn {
         fontFamily: '"SF Mono", Monaco, "Cascadia Code", "Courier New", monospace',
         theme: {
           background: '#1a1a1a',
-          foreground: '#e8e8e6',
+          foreground: '#dddddd',
           cursor: '#4a9eff',
           selectionBackground: 'rgba(74, 158, 255, 0.3)',
           black: '#0a0a0a',
