@@ -29,6 +29,8 @@ function getTerminalWsUrl(): string {
   return `${proto}//${loc.host}${base}/terminal`;
 }
 
+const textEncoder = new TextEncoder();
+
 export function useTerminal(): UseTerminalReturn {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -138,10 +140,10 @@ export function useTerminal(): UseTerminalReturn {
       setIsConnected(false);
     };
 
-    // Terminal input → WebSocket
+    // Terminal input → WebSocket (binary so server distinguishes from JSON control messages)
     term.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data);
+        ws.send(textEncoder.encode(data));
       }
     });
 
