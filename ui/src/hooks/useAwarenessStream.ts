@@ -35,32 +35,41 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
   // Track the oldest line offset we've loaded (for pagination)
   const oldestOffsetRef = useRef<number>(Infinity);
 
-  // Fetch initial backlog (recent entries)
+  // Fetch initial backlog (recent entries) — retries on failure for cold starts
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      try {
-        const resp = await fetch(apiUrl('/awareness/backlog?limit=50'));
-        if (!resp.ok) throw new Error(`backlog fetch failed: ${resp.status}`);
-        const data = await resp.json() as { lines: string[]; total: number; offset: number };
+      const maxRetries = 5;
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          const resp = await fetch(apiUrl('/awareness/backlog?limit=50'));
+          if (!resp.ok) throw new Error(`${resp.status}`);
+          const data = await resp.json() as { lines: string[]; total: number; offset: number };
 
-        if (cancelled) return;
+          if (cancelled) return;
 
-        const parsed = data.lines
-          .map((line: string) => parseContextLine(line))
-          .filter((e): e is AwarenessEntry => e !== null);
+          const parsed = data.lines
+            .map((line: string) => parseContextLine(line))
+            .filter((e): e is AwarenessEntry => e !== null);
 
-        oldestOffsetRef.current = data.offset;
-        setEntries(parsed);
-        setAllLoaded(data.offset === 0);
-        setIsLoading(false);
-        setBacklogDone(true);
-      } catch {
-        if (cancelled) return;
-        setIsLoading(false);
-        setBacklogDone(true);
-        setError('Failed to load awareness history');
+          oldestOffsetRef.current = data.offset;
+          setEntries(parsed);
+          setAllLoaded(data.offset === 0);
+          setIsLoading(false);
+          setBacklogDone(true);
+          return;
+        } catch {
+          if (cancelled) return;
+          if (attempt < maxRetries) {
+            await new Promise((r) => setTimeout(r, 2000));
+            continue;
+          }
+          // All retries exhausted
+          setIsLoading(false);
+          setBacklogDone(true);
+          setError('Failed to load awareness history');
+        }
       }
     })();
 
