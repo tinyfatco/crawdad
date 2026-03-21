@@ -97,6 +97,7 @@ html, body, #root {
 }
 
 .header-btn:hover { background: var(--bg-secondary); color: var(--text); }
+.header-btn.display-toggle.active { color: var(--accent); }
 
 /* Body — three-panel flex */
 .workspace-body {

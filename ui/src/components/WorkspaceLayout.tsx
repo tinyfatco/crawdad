@@ -19,6 +19,8 @@ import { AwarenessPane } from './AwarenessPane';
 
 export function WorkspaceLayout() {
   const { config, isLoading: configLoading } = useConfig();
+  const [displayOverride, setDisplayOverride] = useState<'terminal' | 'desktop' | null>(null);
+  const displayMode = displayOverride ?? config.display_mode;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [awarenessCollapsed, setAwarenessCollapsed] = useState(false);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
@@ -94,11 +96,16 @@ export function WorkspaceLayout() {
     };
   }, []);
 
+  const toggleDisplayMode = () => {
+    const next = displayMode === 'terminal' ? 'desktop' : 'terminal';
+    setDisplayOverride(next);
+  };
+
   const CenterPanel = () => {
     if (viewingFile) {
       return <FileViewer path={viewingFile} onClose={closeFileViewer} />;
     }
-    if (configLoading) {
+    if (configLoading && !displayOverride) {
       return (
         <div className="desktop-pane">
           <div className="desktop-placeholder">
@@ -107,7 +114,7 @@ export function WorkspaceLayout() {
         </div>
       );
     }
-    if (config.display_mode === 'desktop') {
+    if (displayMode === 'desktop') {
       return <DesktopPane />;
     }
     return <TerminalPane />;
@@ -125,6 +132,23 @@ export function WorkspaceLayout() {
           <span className="header-title">{config.agent_name}</span>
         </div>
         <div className="header-right">
+          <button
+            className={`header-btn display-toggle ${displayMode === 'desktop' ? 'active' : ''}`}
+            onClick={toggleDisplayMode}
+            title={displayMode === 'terminal' ? 'Switch to desktop' : 'Switch to terminal'}
+          >
+            {displayMode === 'terminal' ? (
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <rect x="1" y="2" width="14" height="10" rx="1" stroke="currentColor" strokeWidth="1.5" />
+                <path d="M4 14h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M4 5l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M9 11h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            )}
+          </button>
           <button className="header-btn" onClick={toggleAwareness} title="Toggle awareness">
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
               <circle cx="9" cy="9" r="3" stroke="currentColor" strokeWidth="1.5" />
