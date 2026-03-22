@@ -15,7 +15,7 @@ export default defineConfig({
       '/api/file': 'http://localhost:3002',
       '/awareness/backlog': 'http://localhost:3002',
       '/awareness/stream': 'http://localhost:3002',
-      '/voice/stream': { target: 'ws://localhost:3002', ws: true },
+      '/voice/stream': { target: 'ws://localhost:8766', ws: true },
       '/health': 'http://localhost:3002',
       '/status': 'http://localhost:3002',
     },

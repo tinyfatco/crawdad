@@ -29,21 +29,14 @@ export function AwarenessPane() {
 
   const error = chatError || streamError || voice.error;
 
-  // streamingEntry is the live/completed version of the current turn's assistant
-  // response. When it exists and is done (isStreaming=false), suppress the SSE
-  // duplicate that arrives from context.jsonl so there's no flash.
-  const streamingDone = streamingEntry && !streamingEntry.isStreaming;
-  const displayEntries = streamingDone
-    ? entries.filter((e) => {
-        // Skip the SSE assistant entry for the current turn — streamingEntry covers it
-        if (e.role === 'assistant') {
-          const idx = entries.indexOf(e);
-          // It's the last assistant entry, and it arrived after our user message
-          if (idx === entries.length - 1) return false;
-        }
-        return true;
-      })
-    : entries;
+  // When streaming is done and the SSE stream delivers a new assistant entry,
+  // the streamingEntry is stale — hide it so only the SSE version shows.
+  const showStreaming = streamingEntry && (
+    streamingEntry.isStreaming ||
+    // Keep showing until SSE has the real assistant entry for this turn
+    !entries.some((e) => e.role === 'assistant' && e.id !== streamingEntry.id &&
+      new Date(e.timestamp).getTime() >= new Date(streamingEntry.timestamp).getTime())
+  );
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -126,7 +119,7 @@ export function AwarenessPane() {
           <div className="awareness-pane-empty">
             <span>Loading...</span>
           </div>
-        ) : displayEntries.length === 0 && !streamingEntry ? (
+        ) : entries.length === 0 && !streamingEntry ? (
           <div className="awareness-pane-empty">
             <span>Send a message to get started.</span>
           </div>
@@ -138,15 +131,15 @@ export function AwarenessPane() {
                 <span>Loading older messages...</span>
               </div>
             )}
-            {!allLoaded && !isLoadingMore && displayEntries.length > 0 && (
+            {!allLoaded && !isLoadingMore && entries.length > 0 && (
               <div className="awareness-loading-more awareness-load-trigger">
                 <span>Scroll up for older messages</span>
               </div>
             )}
-            {displayEntries.map((entry) => (
+            {entries.map((entry) => (
               <AwarenessEntryComponent key={entry.id} entry={entry} />
             ))}
-            {streamingEntry && <AwarenessEntryComponent key={streamingEntry.id} entry={streamingEntry} />}
+            {showStreaming && <AwarenessEntryComponent key={streamingEntry!.id} entry={streamingEntry!} />}
           </div>
         )}
         <div ref={messagesEndRef} />
