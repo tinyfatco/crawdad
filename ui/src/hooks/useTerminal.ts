@@ -24,9 +24,15 @@ export interface UseTerminalReturn {
 function getTerminalWsUrl(): string {
   const loc = window.location;
   const proto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
-  // Base path: /agents/{id}/ — terminal endpoint is /agents/{id}/terminal
+  // Hosted mode: path is /agents/{id}/ — append terminal
+  // Standalone mode: path is / — connect to /terminal directly
   const base = loc.pathname.endsWith('/') ? loc.pathname.slice(0, -1) : loc.pathname;
-  return `${proto}//${loc.host}${base}/terminal`;
+  const agentMatch = base.match(/\/agents\/[0-9a-f-]+/);
+  if (agentMatch) {
+    return `${proto}//${loc.host}${agentMatch[0]}/terminal`;
+  }
+  // Standalone — gateway serves terminal on /terminal
+  return `${proto}//${loc.host}/terminal`;
 }
 
 const textEncoder = new TextEncoder();
@@ -125,8 +131,8 @@ export function useTerminal(): UseTerminalReturn {
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === 'ready') {
-            // Navigate to /data on connect and clear the screen
-            ws.send(textEncoder.encode('cd /data 2>/dev/null; clear\n'));
+            // PTY already starts in the working directory — just clear the screen
+            ws.send(textEncoder.encode('clear\n'));
           }
         } catch {
           // Not JSON — write as text fallback

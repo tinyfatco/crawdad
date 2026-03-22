@@ -11,6 +11,7 @@ import { TelegramWebhookAdapter } from "./adapters/telegram-webhook.js";
 import { VoiceAdapter } from "./adapters/voice.js";
 import { WebAdapter } from "./adapters/web.js";
 import { WebVoiceBridgeAdapter, handleWebVoiceSession } from "./adapters/web-voice.js";
+import { handleTerminalUpgrade } from "./terminal.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
 import { handleSlashCommand } from "./commands.js";
@@ -538,6 +539,11 @@ gateway.registerGet("/schedule", async (_req, res) => {
 		res.end(JSON.stringify({ error: String(err) }));
 	}
 });
+
+// Register native terminal PTY — provides /terminal WebSocket in standalone mode.
+// When crawdad-cf is in front, it intercepts /agents/{id}/terminal at the Worker
+// level (sandbox.terminal()) so this handler never fires.
+gateway.registerUpgrade("/terminal", handleTerminalUpgrade(workingDir));
 
 await gateway.start(parsedArgs.port);
 log.logInfo(`[perf] gateway listening: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
