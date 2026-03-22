@@ -137,7 +137,7 @@ export function WorkspaceLayout() {
               <path d="M3 5h12M3 9h12M3 13h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
           </button>
-          <span className="header-title">{config.agent_name}</span>
+          {/* agent name removed */}
         </div>
         <div className="header-right">
           <button

@@ -3,6 +3,13 @@ import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallConten
 import { ChannelBadge } from './ChannelBadge';
 import { Markdown } from './Markdown';
 
+function formatTime(ts: string): string {
+  try {
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  } catch { return ''; }
+}
+
 interface AwarenessEntryProps {
   entry: AwarenessEntryType;
 }
@@ -42,13 +49,7 @@ function stripSessionContext(text: string): string {
 function ToolCallBlock({ block, isRunning, result }: { block: ToolCallContent; isRunning?: boolean; result?: ToolResultContent }) {
   const [expanded, setExpanded] = useState(false);
   const args = block.arguments || {};
-  const summary = args.command
-    ? String(args.command).substring(0, 50)
-    : args.file_path
-      ? String(args.file_path).split('/').pop()
-      : args.pattern
-        ? String(args.pattern)
-        : null;
+  const label = (args.label as string) || block.name;
 
   const statusIcon = isRunning
     ? <span className="tool-spinner" />
@@ -60,8 +61,8 @@ function ToolCallBlock({ block, isRunning, result }: { block: ToolCallContent; i
     <div className={`tool-call ${isRunning ? 'running' : ''} ${result?.isError ? 'error' : ''}`}>
       <button className="tool-header" onClick={() => setExpanded(!expanded)}>
         {statusIcon}
-        <span className="tool-name">{block.name}</span>
-        {summary && <span className="tool-summary">{summary}</span>}
+        <span className="tool-arrow">{'\u2192'}</span>
+        <span className="tool-label">{label}</span>
         <span className="tool-expand">{expanded ? '\u2212' : '+'}</span>
       </button>
       {expanded && (
@@ -146,6 +147,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
     return (
       <div className="awareness-entry user-entry">
         <div className="awareness-meta">
+          {entry.timestamp && <span className="entry-timestamp">{formatTime(entry.timestamp)}</span>}
           {entry.channel && <ChannelBadge channel={entry.channel} />}
           {entry.userName && <span className="awareness-username">{(entry.channel === 'web' && (entry.userName === 'user' || entry.userName === 'web-user')) ? 'you' : entry.userName}</span>}
         </div>
@@ -186,6 +188,11 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
 
     return (
       <div className="awareness-entry assistant-entry">
+        {!entry.isStreaming && entry.timestamp && (
+          <div className="awareness-meta">
+            <span className="entry-timestamp">{formatTime(entry.timestamp)}</span>
+          </div>
+        )}
         {thinkingBlocks.map((block, i) => (
           <ThinkingBlock key={i} text={block.type === 'thinking' ? block.thinking : ''} />
         ))}
@@ -212,9 +219,9 @@ function ThinkingBlock({ text }: { text: string }) {
 
   return (
     <div className="awareness-thinking" onClick={() => setExpanded(!expanded)}>
-      <span className="thinking-icon">{expanded ? '\u25BE' : '\u25B8'}</span>
+      <span className="thinking-icon">{'\uD83D\uDCAD'}</span>
       <span className="thinking-text">
-        {expanded ? text : text.substring(0, 60) + (text.length > 60 ? '...' : '')}
+        {expanded ? text : text.substring(0, 80) + (text.length > 80 ? '...' : '')}
       </span>
     </div>
   );

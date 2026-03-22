@@ -347,13 +347,13 @@ html, body, #root {
 
 .awareness-entry {
   max-width: 100%;
-  padding: 0.2rem 0.75rem;
+  padding: 0;
 }
 
 .awareness-entry.user-entry {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.1rem;
 }
 
 .awareness-meta {
@@ -384,15 +384,16 @@ html, body, #root {
 .awareness-user-text {
   color: var(--text);
   font-size: 0.85rem;
-  line-height: 1.5;
+  line-height: 1.7;
+  padding: 0.15rem 0;
 }
 
 /* User message background */
 .awareness-entry.user-entry {
   background: var(--accent-muted);
-  border-radius: 6px;
-  padding: 0.35rem 0.75rem;
-  margin: 0 0.4rem;
+  border-radius: 2px;
+  padding: 0.25rem 0.5rem;
+  margin: 0;
 }
 
 /* Event triggers — compact indicator with optional description */
@@ -467,13 +468,22 @@ html, body, #root {
 .awareness-entry.assistant-entry {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.25rem;
   color: var(--text);
   line-height: 1.6;
   font-size: 0.85rem;
-  padding: 0.4rem 0.75rem;
-  border-left: 2px solid rgba(34, 139, 34, 0.3);
-  margin-left: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  background: var(--bg-secondary);
+  border-radius: 2px;
+  border: 1px solid var(--border);
+  margin: 0;
+}
+
+.entry-timestamp {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  opacity: 0.6;
 }
 
 .awareness-entry.assistant-entry .markdown-content p { margin-bottom: 0.4rem; }
@@ -517,6 +527,32 @@ html, body, #root {
 .awareness-entry.assistant-entry h2 { font-size: 1rem; }
 .awareness-entry.assistant-entry h3 { font-size: 0.9rem; }
 
+.awareness-entry.assistant-entry table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  margin: 0.4rem 0;
+}
+
+.awareness-entry.assistant-entry th,
+.awareness-entry.assistant-entry td {
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.awareness-entry.assistant-entry th {
+  font-weight: 600;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.awareness-entry.assistant-entry tr:last-child td {
+  border-bottom: none;
+}
+
 /* Thinking blocks */
 .awareness-thinking {
   display: flex;
@@ -532,8 +568,7 @@ html, body, #root {
 .awareness-thinking:hover { color: var(--text); }
 
 .thinking-icon {
-  font-size: 0.6rem;
-  margin-top: 0.15rem;
+  font-size: 0.7rem;
   flex-shrink: 0;
 }
 
@@ -612,8 +647,8 @@ html, body, #root {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.tool-name { flex-shrink: 0; }
-.tool-summary { flex: 1; opacity: 0.7; font-size: 0.7rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-arrow { flex-shrink: 0; opacity: 0.5; }
+.tool-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-expand { opacity: 0.5; font-size: 0.8rem; }
 
 .tool-details { padding: 0 0.5rem 0.4rem; font-size: 0.7rem; }

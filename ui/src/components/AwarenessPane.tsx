@@ -117,10 +117,6 @@ export function AwarenessPane() {
 
   return (
     <div className="awareness-pane">
-      <div className="awareness-pane-header">
-        <span className="awareness-pane-title">Awareness</span>
-      </div>
-
       <div
         className="awareness-pane-messages"
         ref={scrollContainerRef}
