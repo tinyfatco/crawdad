@@ -29,23 +29,11 @@ export function AwarenessPane() {
 
   const error = chatError || streamError || voice.error;
 
-  // Dedup: when optimistic entries exist, skip SSE entries that duplicate them.
-  // The optimistic entries (userEntry, streamingEntry) are the source of truth
-  // for the current turn — SSE duplicates get filtered out at render time.
-  const lastUserText = userEntry?.strippedText || '';
-  const filteredEntries = (lastUserText || streamingEntry)
-    ? entries.filter((e) => {
-        // Skip SSE user entry that matches the optimistic one
-        if (lastUserText && e.role === 'user' && e.strippedText === lastUserText) return false;
-        // Skip SSE assistant entry that follows the matched user entry (same turn)
-        if (streamingEntry && e.role === 'assistant' && lastUserText) {
-          // Check if the previous entry in the original array was the matched user
-          const idx = entries.indexOf(e);
-          if (idx > 0 && entries[idx - 1]?.role === 'user' && entries[idx - 1]?.strippedText === lastUserText) return false;
-        }
-        return true;
-      })
-    : entries;
+  // SSE stream is the single source of truth. streamingEntry shows live tokens
+  // until the final assistant message arrives via SSE, then it hides.
+  const lastEntry = entries[entries.length - 1];
+  const sseHasAssistant = lastEntry?.role === 'assistant' && !lastEntry.isStreaming;
+  const showStreaming = streamingEntry && !sseHasAssistant;
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -132,7 +120,7 @@ export function AwarenessPane() {
           <div className="awareness-pane-empty">
             <span>Loading...</span>
           </div>
-        ) : filteredEntries.length === 0 && !userEntry && !streamingEntry ? (
+        ) : entries.length === 0 && !showStreaming ? (
           <div className="awareness-pane-empty">
             <span>Send a message to get started.</span>
           </div>
@@ -144,16 +132,15 @@ export function AwarenessPane() {
                 <span>Loading older messages...</span>
               </div>
             )}
-            {!allLoaded && !isLoadingMore && filteredEntries.length > 0 && (
+            {!allLoaded && !isLoadingMore && entries.length > 0 && (
               <div className="awareness-loading-more awareness-load-trigger">
                 <span>Scroll up for older messages</span>
               </div>
             )}
-            {filteredEntries.map((entry) => (
+            {entries.map((entry) => (
               <AwarenessEntryComponent key={entry.id} entry={entry} />
             ))}
-            {userEntry && <AwarenessEntryComponent key={userEntry.id} entry={userEntry} />}
-            {streamingEntry && <AwarenessEntryComponent key={streamingEntry.id} entry={streamingEntry} />}
+            {showStreaming && <AwarenessEntryComponent key={streamingEntry.id} entry={streamingEntry} />}
           </div>
         )}
         <div ref={messagesEndRef} />

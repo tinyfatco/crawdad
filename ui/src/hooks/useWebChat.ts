@@ -139,10 +139,8 @@ export function useWebChat(): UseWebChatReturn {
         });
       }
     } finally {
-      // Mark streaming done but keep entries visible —
-      // awareness stream is unreliable/slow, so the streaming entry
-      // must stay as the source of truth until dedup hides it.
-      setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
+      setUserEntry(null);
+      setStreamingEntry(null);
       setIsStreaming(false);
       setStatus('idle');
       abortControllerRef.current = null;

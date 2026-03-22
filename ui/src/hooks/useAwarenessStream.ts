@@ -84,7 +84,10 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     es.onmessage = (event) => {
       const entry = parseContextLine(event.data);
       if (!entry) return;
-      setEntries((prev) => [...prev, entry]);
+      setEntries((prev) => {
+        if (prev.some((e) => e.id === entry.id)) return prev;
+        return [...prev, entry];
+      });
     };
 
     es.onerror = () => {
