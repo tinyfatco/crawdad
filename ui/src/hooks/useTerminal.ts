@@ -130,10 +130,10 @@ export function useTerminal(): UseTerminalReturn {
         // Text messages are JSON control messages from the sandbox PTY — don't render them
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === 'ready') {
-            // PTY already starts in the working directory — just clear the screen
-            ws.send(textEncoder.encode('clear\n'));
+          if (msg.type === 'exit') {
+            term.write('\r\n[Process exited]\r\n');
           }
+          // ready, error — no terminal output needed
         } catch {
           // Not JSON — write as text fallback
           term.write(event.data);

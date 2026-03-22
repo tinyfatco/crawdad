@@ -92,22 +92,26 @@ async function startTerminalSession(ws: WebSocket, workingDir: string): Promise<
 	});
 
 	// WebSocket messages → PTY
+	// Note: Vite's dev proxy may not preserve binary/text frame distinction,
+	// so we check content regardless of isBinary flag.
 	ws.on("message", (data, isBinary) => {
-		if (isBinary || data instanceof Buffer) {
-			// Binary = keystrokes → PTY stdin
-			const text = data instanceof Buffer ? data.toString("utf-8") : Buffer.from(data as ArrayBuffer).toString("utf-8");
-			pty.write(text);
-		} else {
-			// Text = JSON control message
+		const text = data instanceof Buffer ? data.toString("utf-8") : Buffer.from(data as ArrayBuffer).toString("utf-8");
+
+		// Try to parse as JSON control message first (resize, etc.)
+		if (text.startsWith("{")) {
 			try {
-				const msg = JSON.parse(data.toString());
+				const msg = JSON.parse(text);
 				if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
 					pty.resize(msg.cols, msg.rows);
+					return;
 				}
 			} catch {
-				// Not valid JSON — ignore
+				// Not valid JSON — fall through to PTY write
 			}
 		}
+
+		// Everything else is keystrokes → PTY stdin
+		pty.write(text);
 	});
 
 	// WebSocket close → kill PTY
