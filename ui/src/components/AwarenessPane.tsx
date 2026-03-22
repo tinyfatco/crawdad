@@ -15,8 +15,6 @@ import { InputBar } from './InputBar';
 export function AwarenessPane() {
   const { entries, isLoading, backlogDone, loadMore, isLoadingMore, allLoaded, error: streamError } = useAwarenessStream();
   const {
-    userEntry,
-    streamingEntry,
     isStreaming,
     error: chatError,
     sendMessage,
@@ -29,14 +27,9 @@ export function AwarenessPane() {
 
   const error = chatError || streamError || voice.error;
 
-  // When streaming is done and the SSE stream delivers a new assistant entry,
-  // the streamingEntry is stale — hide it so only the SSE version shows.
-  const showStreaming = streamingEntry && (
-    streamingEntry.isStreaming ||
-    // Keep showing until SSE has the real assistant entry for this turn
-    !entries.some((e) => e.role === 'assistant' && e.id !== streamingEntry.id &&
-      new Date(e.timestamp).getTime() >= new Date(streamingEntry.timestamp).getTime())
-  );
+  // SSE awareness stream is the single source of truth for all messages.
+  // useWebChat only provides isStreaming (to disable input) and error state.
+  // No optimistic rendering — messages appear when the server writes them.
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -86,7 +79,7 @@ export function AwarenessPane() {
     if (!userScrolledRef.current && backlogDone) {
       scrollToBottom('smooth');
     }
-  }, [entries.length, streamingEntry, scrollToBottom, backlogDone]);
+  }, [entries.length, scrollToBottom, backlogDone]);
 
   // Detect user scroll — scroll-up triggers loadMore, scroll-down hides button
   const handleScroll = useCallback(() => {
@@ -119,7 +112,7 @@ export function AwarenessPane() {
           <div className="awareness-pane-empty">
             <span>Loading...</span>
           </div>
-        ) : entries.length === 0 && !streamingEntry ? (
+        ) : entries.length === 0 ? (
           <div className="awareness-pane-empty">
             <span>Send a message to get started.</span>
           </div>
@@ -139,7 +132,6 @@ export function AwarenessPane() {
             {entries.map((entry) => (
               <AwarenessEntryComponent key={entry.id} entry={entry} />
             ))}
-            {showStreaming && <AwarenessEntryComponent key={streamingEntry!.id} entry={streamingEntry!} />}
           </div>
         )}
         <div ref={messagesEndRef} />
@@ -172,7 +164,7 @@ export function AwarenessPane() {
       <InputBar
         onSend={sendMessage}
         onStop={abortStream}
-        disabled={isStreaming || isVoiceActive}
+        disabled={isVoiceActive}
         isStreaming={isStreaming}
         extraButtons={
           <button
