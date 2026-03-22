@@ -139,8 +139,9 @@ export function useWebChat(): UseWebChatReturn {
         });
       }
     } finally {
-      setUserEntry(null);
-      setStreamingEntry(null);
+      // Keep streamingEntry with isStreaming=false — it becomes the rendered
+      // version. The SSE duplicate gets filtered out in AwarenessPane.
+      setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
       setIsStreaming(false);
       setStatus('idle');
       abortControllerRef.current = null;
