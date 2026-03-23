@@ -205,7 +205,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		});
 		// Record own message in pulse so timeSinceMyLast is accurate
 		if (this.pulse && this.botUserId) {
-			this.pulse.record(channel, this.botUserId, text.length);
+			this.pulse.record(channel, this.botUserId, text.length, text);
 		}
 	}
 

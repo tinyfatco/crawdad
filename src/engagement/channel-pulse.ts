@@ -11,6 +11,8 @@ export interface PulseEntry {
 	ts: number; // Date.now() millis
 	participantId: string;
 	textLength: number;
+	/** First ~300 chars of message text, for ambient context. */
+	text?: string;
 }
 
 const BUFFER_SIZE = 50;
@@ -30,17 +32,36 @@ export class ChannelPulse {
 	}
 
 	/** Record a message in a channel. Call on every incoming event, before any filtering. */
-	record(channelId: string, participantId: string, textLength: number): void {
+	record(channelId: string, participantId: string, textLength: number, text?: string): void {
 		let buf = this.buffers.get(channelId);
 		if (!buf) {
 			buf = [];
 			this.buffers.set(channelId, buf);
 		}
-		buf.push({ ts: Date.now(), participantId, textLength });
+		buf.push({ ts: Date.now(), participantId, textLength, text: text?.substring(0, 300) });
 		// Ring buffer: trim from front
 		if (buf.length > BUFFER_SIZE) {
 			buf.splice(0, buf.length - BUFFER_SIZE);
 		}
+	}
+
+	/** Recent messages within a time window, capped. For ambient context. */
+	recentMessages(channelId: string, windowMs = 5 * 60 * 1000, maxCount = 15): PulseEntry[] {
+		const buf = this.buffers.get(channelId);
+		if (!buf) return [];
+		const cutoff = Date.now() - windowMs;
+		const recent = buf.filter((e) => e.ts > cutoff && e.text);
+		// Deduplicate by text content (same message might arrive via multiple event types)
+		const seen = new Set<string>();
+		const deduped: PulseEntry[] = [];
+		for (const entry of recent) {
+			const key = `${entry.participantId}:${entry.text}`;
+			if (!seen.has(key)) {
+				seen.add(key);
+				deduped.push(entry);
+			}
+		}
+		return deduped.slice(-maxCount);
 	}
 
 	/** Messages in the last 15-minute window. */

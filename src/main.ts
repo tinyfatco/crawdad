@@ -241,7 +241,7 @@ const AMBIENT_COOLDOWN_MS = 45_000; // 45 seconds
 const ambientCooldowns = new Map<string, number>();
 
 /** Called by Slack adapters when a non-self, non-mention message arrives in a channel. */
-function handleAmbientMessage(channelId: string, event: MomEvent): void {
+function handleAmbientMessage(channelId: string, _event: MomEvent): void {
 	// Don't ambient-engage in DMs — those are handled directly
 	if (channelId.startsWith("D")) return;
 
@@ -256,33 +256,52 @@ function handleAmbientMessage(channelId: string, event: MomEvent): void {
 	const timeSince = pulse.timeSinceMyLast(channelId);
 	if (timeSince < AMBIENT_COOLDOWN_MS) return;
 
-	// All gates passed — fire ambient engagement
+	// All gates passed — schedule ambient engagement with debounce
 	ambientCooldowns.set(channelId, Date.now());
 
+	// Random debounce: 5-30s delay so multiple agents don't all respond at once
+	const debounceMs = 5000 + Math.random() * 25000;
+
 	const pulseSummary = pulse.summary(channelId);
-	log.logInfo(`[ambient:${channelId}] Evaluating engagement (temp=${pulseSummary.temperature}, sinceMyLast=${Math.round(pulseSummary.timeSinceMyLastMs / 1000)}s, participants=${pulseSummary.recentParticipants})`);
+	log.logInfo(`[ambient:${channelId}] Scheduling engagement in ${(debounceMs / 1000).toFixed(0)}s (temp=${pulseSummary.temperature}, sinceMyLast=${Math.round(pulseSummary.timeSinceMyLastMs / 1000)}s, participants=${pulseSummary.recentParticipants})`);
 
-	// Find the Slack adapter that owns this channel
-	const slackAdapter = adapters.find((a) => a.name === "slack" && a.getChannel(channelId));
-	if (!slackAdapter) return;
+	setTimeout(() => {
+		// Re-check all conditions after debounce
+		if (awareness?.running) return;
+		if (pulse.timeSinceMyLast(channelId) < AMBIENT_COOLDOWN_MS) return;
 
-	// Create an ambient event — the agent decides whether to speak
-	const ambientEvent: MomEvent = {
-		type: "mention",
-		channel: channelId,
-		ts: event.ts,
-		user: event.user,
-		text: `[AMBIENT] A conversation is happening in this channel. Here's the latest message:\n\n${event.text}\n\nChannel pulse: ${pulseSummary.temperature} messages in last 15min, ${pulseSummary.recentParticipants} participants, you last spoke ${pulseSummary.timeSinceMyLastMs === Infinity ? "never" : Math.round(pulseSummary.timeSinceMyLastMs / 1000) + "s ago"}.\n\nYou're observing this conversation naturally. If you have something genuinely useful, interesting, or fun to add — respond naturally as a participant. Keep it brief and conversational. If you have nothing to add, respond with exactly: PASS`,
-	};
+		// Get recent messages from the last 5 minutes for context
+		const recentMessages = pulse.recentMessages(channelId);
+		if (recentMessages.length === 0) return;
 
-	const queue = (slackAdapter as any).getQueue?.(channelId);
-	if (queue) {
-		queue.enqueue(async () => {
-			// Re-check: agent might have started running while queued
-			if (awareness?.running) return;
-			await handler.handleEvent(ambientEvent, slackAdapter);
-		});
-	}
+		const refreshedSummary = pulse.summary(channelId);
+
+		// Format recent messages for the agent
+		const messageLines = recentMessages.map((m) => {
+			const who = m.participantId;
+			return `<${who}>: ${m.text}`;
+		}).join("\n");
+
+		// Find the Slack adapter that owns this channel
+		const slackAdapter = adapters.find((a) => a.name === "slack" && a.getChannel(channelId));
+		if (!slackAdapter) return;
+
+		const ambientEvent: MomEvent = {
+			type: "mention",
+			channel: channelId,
+			ts: String(Date.now() / 1000),
+			user: "ambient",
+			text: `[AMBIENT] A conversation is happening in this channel. Recent messages:\n\n${messageLines}\n\nChannel pulse: ${refreshedSummary.temperature} messages in last 15min, ${refreshedSummary.recentParticipants} participants, you last spoke ${refreshedSummary.timeSinceMyLastMs === Infinity ? "never" : Math.round(refreshedSummary.timeSinceMyLastMs / 1000) + "s ago"}.\n\nYou're observing this conversation naturally. If you have something genuinely useful, interesting, or fun to add — respond naturally as a participant. Keep it brief and conversational. If you have nothing to add, use the yield_no_action tool.`,
+		};
+
+		const queue = (slackAdapter as any).getQueue?.(channelId);
+		if (queue) {
+			queue.enqueue(async () => {
+				if (awareness?.running) return;
+				await handler.handleEvent(ambientEvent, slackAdapter);
+			});
+		}
+	}, debounceMs);
 }
 
 function createAdapter(name: string): AdapterWithHandler {
