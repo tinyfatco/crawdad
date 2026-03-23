@@ -1,11 +1,12 @@
 /**
- * set_working_channel tool.
+ * move_to_channel — move to a different channel.
  *
- * Lets the agent explicitly shift its attention to a different channel (any adapter).
- * When called, the harness will route subsequent output to the specified channel.
+ * When called, the harness routes all subsequent output to the specified channel.
+ * The agent is effectively "moving" to that channel — future responses appear there.
  *
- * This is a trunk-only tool — only meaningful when the agent has unified
- * consciousness across multiple channels.
+ * Use this when you want to shift your focus to another channel, e.g. after
+ * receiving a cross-channel message that needs your full attention there,
+ * or during a heartbeat when you want to reach out on Slack/Telegram/Email.
  */
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
@@ -14,29 +15,30 @@ import type { PlatformAdapter } from "../adapters/types.js";
 import * as log from "../log.js";
 
 /**
- * Create the set_working_channel tool for attention shifting.
+ * Create the move_to_channel tool.
  *
  * @param adapters - All platform adapters (used to resolve channel names)
- * @param onShift - Callback invoked when the agent shifts attention. Returns the resolved channel name.
+ * @param onMove - Callback invoked when the agent moves. Returns the resolved channel name.
  */
-export function createSetWorkingChannelTool(
+export function createMoveToChannelTool(
 	adapters: PlatformAdapter[],
-	onShift: (channelId: string) => string | undefined,
+	onMove: (channelId: string) => string | undefined,
 ): AgentTool<any> {
 	const schema = Type.Object({
 		label: Type.String({ description: "Brief description shown in logs" }),
 		channel: Type.String({
-			description: "Channel ID to shift attention to (Slack: C09V58YMJGP or #general, Telegram: numeric chat ID, Email: email-addr)",
+			description: "Channel ID to move to (Slack: C09V58YMJGP or #general, Telegram: numeric chat ID, Email: email-addr)",
 		}),
 	});
 
 	return {
-		name: "set_working_channel",
-		label: "set_working_channel",
+		name: "move_to_channel",
+		label: "move_to_channel",
 		description:
-			"Shift your attention to a different channel. Your subsequent text responses will be delivered to that channel. " +
+			"Move to a different channel. Your subsequent text responses will be delivered to that channel. " +
 			"Works across all adapters: Slack (C/D/G IDs or #name), Telegram (numeric chat IDs), Email (email-addr). " +
-			"Use this when you want to move your focus — e.g., after receiving a cross-channel message that needs your full attention there.",
+			"Use this when you want to move your focus — e.g., after receiving a cross-channel message " +
+			"that needs your full attention there, or during a heartbeat to reach out on a specific channel.",
 		parameters: schema,
 		execute: async (
 			_toolCallId: string,
@@ -67,7 +69,7 @@ export function createSetWorkingChannelTool(
 				}
 			}
 
-			const channelName = onShift(resolvedChannelId);
+			const channelName = onMove(resolvedChannelId);
 			if (channelName === undefined) {
 				return {
 					content: [{ type: "text" as const, text: `Channel ${resolvedChannelId} not found across any adapter.` }],
@@ -75,10 +77,10 @@ export function createSetWorkingChannelTool(
 				};
 			}
 
-			log.logInfo(`[set_working_channel] Attention shifted to ${channelName} (${resolvedChannelId})`);
+			log.logInfo(`[move_to_channel] Moved to ${channelName} (${resolvedChannelId})`);
 
 			return {
-				content: [{ type: "text" as const, text: `Attention shifted to ${channelName} (${resolvedChannelId}). Your next responses will appear there.` }],
+				content: [{ type: "text" as const, text: `Moved to ${channelName} (${resolvedChannelId}). Your next responses will appear there.` }],
 				details: undefined,
 			};
 		},

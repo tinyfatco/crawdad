@@ -23,8 +23,8 @@ import { Gateway } from "./gateway.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
-import { createPingTool } from "./tools/ping.js";
-import { createSetWorkingChannelTool } from "./tools/set-working-channel.js";
+import { createMoveToChannelTool } from "./tools/move-to-channel.js";
+import { createSendMessageToChannelTool } from "./tools/send-message-to-channel.js";
 import { createYieldNoActionTool } from "./tools/yield-no-action.js";
 
 // ============================================================================
@@ -434,9 +434,9 @@ function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstruc
 	if (!awareness) {
 		const awarenessDir = join(workingDir, AWARENESS_DIR);
 		const extraTools = [
-			createPingTool(adapters),
+			createSendMessageToChannelTool(adapters),
 			createYieldNoActionTool(),
-			createSetWorkingChannelTool(adapters, (newChannelId: string) => {
+			createMoveToChannelTool(adapters, (newChannelId: string) => {
 				for (const a of adapters) {
 					const channel = a.getChannel(newChannelId);
 					if (channel) {
@@ -509,8 +509,8 @@ const handler: MomHandler = {
 			const currentLabel = getChannelDisplayName(awareness.displayChannelId, adapters);
 			formattedMessage = `[${timestamp}] [${channelLabel}] [${userName}]: ${event.text}`;
 
-			// Directive steering prompt — always ping, shift on urgency
-			formattedMessage += `\n\n---\n[HARNESS] A message arrived from ${channelLabel} while you are attending to ${currentLabel}.\n\nREQUIRED: Use the \`ping\` tool to acknowledge the sender on ${channelLabel} immediately. A short "Got it, working on something — one moment" is fine. Never leave a cross-channel message unacknowledged.\n\nIf the message is urgent or more important than your current task, also call \`set_working_channel\` to shift your attention to ${channelLabel} and abandon your current task — you can resume it later.`;
+			// Directive steering prompt — always acknowledge, shift on urgency
+			formattedMessage += `\n\n---\n[HARNESS] A message arrived from ${channelLabel} while you are attending to ${currentLabel}.\n\nREQUIRED: Use the \`send_message_to_channel\` tool to acknowledge the sender on ${channelLabel} immediately. A short "Got it, working on something — one moment" is fine. Never leave a cross-channel message unacknowledged.\n\nIf the message is urgent or more important than your current task, also call \`move_to_channel\` to shift your attention to ${channelLabel} and abandon your current task — you can resume it later.`;
 		} else {
 			formattedMessage = `[${timestamp}] [${channelLabel}] [${userName}]: ${event.text}`;
 		}
