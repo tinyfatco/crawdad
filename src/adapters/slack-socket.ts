@@ -43,22 +43,36 @@ export class SlackSocketAdapter extends SlackBase {
 			const e = event as {
 				text: string;
 				channel: string;
-				user: string;
+				user?: string;
+				bot_id?: string;
 				ts: string;
 				files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
 			};
+
+			// Feed pulse before any filtering
+			if (this.pulse && (e.user || e.bot_id)) {
+				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length);
+			}
 
 			if (e.channel.startsWith("D")) {
 				ack();
 				return;
 			}
 
+			// Ignore own messages only
+			if (e.user === this.botUserId) {
+				ack();
+				return;
+			}
+
+			const userId = e.user || e.bot_id || "unknown";
+
 			const momEvent: MomEvent = {
 				type: "mention",
 				channel: e.channel,
 				ts: e.ts,
-				user: e.user,
-				text: e.text.replace(/<@[A-Z0-9]+>/gi, "").trim(),
+				user: userId,
+				text: (e.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
 				files: e.files,
 			};
 
@@ -91,7 +105,7 @@ export class SlackSocketAdapter extends SlackBase {
 			ack();
 		});
 
-		// All messages (for logging) + DMs (for triggering)
+		// All messages (for logging) + DMs (for triggering) + ambient engagement
 		this.socketClient.on("message", ({ event, ack }) => {
 			const e = event as {
 				text?: string;
@@ -104,11 +118,23 @@ export class SlackSocketAdapter extends SlackBase {
 				files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
 			};
 
-			if (e.bot_id || !e.user || e.user === this.botUserId) {
+			// Feed pulse before any filtering — pulse needs to see everything
+			if (this.pulse && (e.user || e.bot_id)) {
+				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length);
+			}
+
+			// Ignore own messages only — bots are just participants
+			if (e.user === this.botUserId) {
 				ack();
 				return;
 			}
-			if (e.subtype !== undefined && e.subtype !== "file_share") {
+			// Ignore subtypes other than file_share and bot_message
+			if (e.subtype !== undefined && e.subtype !== "file_share" && e.subtype !== "bot_message") {
+				ack();
+				return;
+			}
+			// Need at least a user or bot_id
+			if (!e.user && !e.bot_id) {
 				ack();
 				return;
 			}
@@ -117,6 +143,7 @@ export class SlackSocketAdapter extends SlackBase {
 				return;
 			}
 
+			const userId = e.user || e.bot_id || "unknown";
 			const isDM = e.channel_type === "im";
 			const isBotMention = e.text?.includes(`<@${this.botUserId}>`);
 
@@ -129,7 +156,7 @@ export class SlackSocketAdapter extends SlackBase {
 				type: isDM ? "dm" : "mention",
 				channel: e.channel,
 				ts: e.ts,
-				user: e.user,
+				user: userId,
 				text: (e.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
 				files: e.files,
 			};
@@ -158,6 +185,9 @@ export class SlackSocketAdapter extends SlackBase {
 				} else {
 					this.getQueue(e.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
 				}
+			} else {
+				// Ambient engagement: non-DM, non-mention message
+				this.onAmbientMessage?.(e.channel, momEvent);
 			}
 
 			ack();

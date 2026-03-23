@@ -1,31 +1,51 @@
 # Current Work
 
-## Self-Hosted Runtime Gaps
+**Last updated:** 2026-03-21
 
-Troublemaker runs as a standalone agent runtime but currently relies on an external orchestrator for terminal PTY, desktop VNC, and auth. We're designing native fallbacks so troublemaker has a complete self-hosted story on any VPS or bare metal.
+## Status: Self-Hosted Runtime Is Real
 
-### Terminal PTY
-- Workspace UI connects to `/terminal` via WebSocket but there's no server-side PTY handler in troublemaker
-- Need a native adapter using `node-pty` + `ws` that the gateway activates on WebSocket upgrade
-- Client protocol is already correct (binary = stdin, JSON = control messages) — no UI changes needed
-- Design doc: `memory-bank/03-design/vps-self-hosted-gaps.md`
+### Native Terminal PTY — Shipped
 
-### Desktop VNC
-- The noVNC proxy for desktop mode (`/vnc/*` routes) is handled externally
-- Need a native path for VPS deployments — either embedded noVNC proxy or direct VNC WebSocket bridge
-- Lower priority than terminal but part of the same abstraction
+`node-pty` + WebSocket upgrade handler in `src/terminal.ts`. Gateway registers `UPGRADE /terminal` route. Works standalone and through crawdad-cf. UI hooks updated to connect to gateway port instead of requiring sandbox terminal proxy.
 
-### Auth
-- Gateway has zero authentication — access control is handled by the orchestrator layer
-- VPS deployments need a lightweight auth middleware (token-based or basic auth)
-- Should be optional — disabled for local dev, enabled via env var
+### Ghost — Standalone Agent on Tiny-Bat
 
-### Architecture Direction
-Considering a pluggable adapter pattern for terminal and desktop, similar to how messaging adapters work. The abstraction should allow different backends (native PTY, external orchestrator, future options) without changing the gateway or UI code. Still marinating on the right shape.
+Proof of concept for self-hosted troublemaker:
+- Git worktree at `~/troublemaker-ghost` (branch `ghost-dev`)
+- Data at `~/ghost-data` with `settings.json` + `MEMORY.md`
+- Running Kimi K2.5 via Fireworks API (`FIREWORKS_API_KEY`)
+- ElevenLabs voice working (voice ID `qA5SHJ9UjGlW2QwXWR7w`)
+- 28ms startup. Terminal, web chat, voice, awareness stream all functional.
+- Auth: SSH tunnel. No tokens needed. Gateway trusts localhost.
+- Heartbeat running — Kimi autonomously doing background work.
 
-### Status
-Analysis complete. Design docs written. Implementation pending.
+### Message Dedup — Fixed After 3 Iterations
 
-## Upstream Pi Dependency (0.58.4)
+The web chat had a persistent duplication bug: optimistic entries (shown immediately) overlapped with SSE entries (from context.jsonl). Three attempts:
+1. ID dedup on SSE insert — caught reconnections but not optimistic overlap
+2. Clear optimistic on complete — caused visible flash
+3. **Final:** `showStreaming` flag. Streaming entry stays visible until SSE delivers an assistant entry with timestamp >= streaming timestamp, then yields. No flash, no duplication. Voice and cross-channel messages pass through unfiltered.
 
-Bumped to `@mariozechner/pi-agent-core@0.58.4` (from 0.52.10). Includes 1M context support for Claude 4.6, compaction bugfixes, and `AuthStorage` constructor changes (now uses static factories).
+### UI Polish — Shipped
+
+- Timestamps in meta row (top-left)
+- Flat card styling (2px radius, minimal padding)
+- Assistant cards with background + border
+- Tool calls: `→ label` format matching Telegram/Slack
+- Table formatting for markdown tables
+- Loading screen: `#1a1a1a`, spinner on top, "Waking up..."
+
+### Next P0: Real-Time Awareness Stream
+
+SSE polls context.jsonl on an interval — noticeable delay between agent work and UI update. Need `fs.watch` push or sub-second polling for real-time feel. Critical for heartbeat/spontaneity where agent works in background.
+
+## Architecture
+
+- **Gateway:** HTTP server on configurable port (default 3002). Serves static UI, REST endpoints, SSE stream, WebSocket upgrade for terminal.
+- **Voice:** Dedicated WebSocket server on port 8766. Vite dev server proxies `/voice/stream` there.
+- **Adapters:** web, telegram, slack, discord, email, heartbeat, web-voice. Each independent.
+- **Sandbox modes:** `host` (bare metal, tools run directly) or `docker:<name>` (isolated).
+
+## Upstream
+
+Pi agent core `@mariozechner/pi-agent-core@0.58.4`. 1M context for Claude 4.6. Models: Kimi K2.5 (Fireworks), Claude Sonnet 4.6, GPT-5.4 (Codex OAuth — currently rate-limited).

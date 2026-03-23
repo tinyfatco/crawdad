@@ -1,6 +1,7 @@
 import { WebClient } from "@slack/web-api";
 import { appendFileSync, existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
+import type { ChannelPulse } from "../engagement/channel-pulse.js";
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
 import { createTwoMessageContext } from "./context.js";
@@ -63,6 +64,9 @@ export interface SlackBaseConfig {
 	botToken: string;
 	workingDir: string;
 	store: ChannelStore;
+	pulse?: ChannelPulse;
+	/** Called when a non-self message arrives and the agent might want to engage. */
+	onAmbientMessage?: (channelId: string, event: MomEvent) => void;
 }
 
 export abstract class SlackBase implements PlatformAdapter {
@@ -80,6 +84,8 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	protected store: ChannelStore;
 	protected botUserId: string | null = null;
 	protected startupTs: string | null = null;
+	protected pulse?: ChannelPulse;
+	protected onAmbientMessage?: (channelId: string, event: MomEvent) => void;
 
 	protected users = new Map<string, SlackUser>();
 	protected channels = new Map<string, SlackChannel>();
@@ -89,6 +95,8 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		this.workingDir = config.workingDir;
 		this.store = config.store;
 		this.webClient = new WebClient(config.botToken);
+		this.pulse = config.pulse;
+		this.onAmbientMessage = config.onAmbientMessage;
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -109,6 +117,11 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	protected async initMetadata(): Promise<void> {
 		const auth = await this.webClient.auth.test();
 		this.botUserId = auth.user_id as string;
+
+		// Update pulse with resolved bot user ID
+		if (this.pulse) {
+			this.pulse.setSelfId(this.botUserId);
+		}
 
 		await Promise.all([this.fetchUsers(), this.fetchChannels()]);
 		log.logInfo(`Loaded ${this.channels.size} channels, ${this.users.size} users`);
@@ -190,6 +203,10 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			attachments: [],
 			isBot: true,
 		});
+		// Record own message in pulse so timeSinceMyLast is accurate
+		if (this.pulse && this.botUserId) {
+			this.pulse.record(channel, this.botUserId, text.length);
+		}
 	}
 
 	enqueueEvent(event: MomEvent): boolean {
@@ -371,9 +388,9 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		const relevantMessages = allMessages.filter((msg) => {
 			if (!msg.ts || existingTs.has(msg.ts)) return false;
 			if (msg.user === this.botUserId) return true;
-			if (msg.bot_id) return false;
-			if (msg.subtype !== undefined && msg.subtype !== "file_share") return false;
-			if (!msg.user) return false;
+			// Keep bot messages — bots are just participants
+			if (msg.subtype !== undefined && msg.subtype !== "file_share" && msg.subtype !== "bot_message") return false;
+			if (!msg.user && !msg.bot_id) return false;
 			if (!msg.text && (!msg.files || msg.files.length === 0)) return false;
 			return true;
 		});

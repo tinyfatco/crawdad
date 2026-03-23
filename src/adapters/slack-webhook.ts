@@ -122,10 +122,17 @@ export class SlackWebhookAdapter extends SlackBase {
 
 		const event = payload.event;
 
-		// Ignore bot messages and messages without users
-		if (event.bot_id || !event.user || event.user === this.botUserId) return;
-		// Ignore subtypes other than file_share
-		if (event.subtype !== undefined && event.subtype !== "file_share") return;
+		// Feed pulse on every message (before any filtering) — pulse needs to see everything
+		if (this.pulse && event.ts && (event.user || event.bot_id)) {
+			this.pulse.record(event.channel, event.user || event.bot_id!, (event.text || "").length);
+		}
+
+		// Ignore own messages only — bots are just participants
+		if (event.user === this.botUserId) return;
+		// Ignore subtypes other than file_share and bot_message
+		if (event.subtype !== undefined && event.subtype !== "file_share" && event.subtype !== "bot_message") return;
+		// Need at least a user or bot_id to attribute the message
+		if (!event.user && !event.bot_id) return;
 
 		if (event.type === "app_mention") {
 			this.handleAppMention(event);
@@ -141,7 +148,7 @@ export class SlackWebhookAdapter extends SlackBase {
 			type: "mention",
 			channel: event.channel,
 			ts: event.ts,
-			user: event.user!,
+			user: event.user || event.bot_id || "unknown",
 			text: (event.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
 			files: event.files,
 		};
@@ -173,11 +180,13 @@ export class SlackWebhookAdapter extends SlackBase {
 		// Skip channel messages that are @mentions (handled by app_mention)
 		if (!isDM && isBotMention) return;
 
+		const userId = event.user || event.bot_id || "unknown";
+
 		const momEvent: MomEvent = {
 			type: isDM ? "dm" : "mention",
 			channel: event.channel,
 			ts: event.ts,
-			user: event.user!,
+			user: userId,
 			text: (event.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
 			files: event.files,
 		};
@@ -199,6 +208,9 @@ export class SlackWebhookAdapter extends SlackBase {
 			} else {
 				this.getQueue(event.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
 			}
+		} else {
+			// Ambient engagement: non-DM, non-mention message — let the engagement system decide
+			this.onAmbientMessage?.(event.channel, momEvent);
 		}
 	}
 }

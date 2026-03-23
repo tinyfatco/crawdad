@@ -24,6 +24,7 @@ import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
+import { wasYielded, resetYield } from "./tools/yield-no-action.js";
 
 export interface PendingMessage {
 	userName: string;
@@ -704,6 +705,7 @@ function createRunner(
 			runState.stopReason = "stop";
 			runState.errorMessage = undefined;
 			runState.initialPromptSent = false;
+			resetYield(); // Clear any stale yield from previous run
 
 			// Create queue for this run
 			let queueChain = Promise.resolve();
@@ -828,15 +830,10 @@ function createRunner(
 						.map((c) => c.text)
 						.join("\n") || "";
 
-				// Check for [SILENT] marker
-				if (finalText.trim() === "[SILENT]" || finalText.trim().startsWith("[SILENT]")) {
-					try {
-						await ctx.deleteMessage();
-						log.logInfo("Silent response - deleted message and thread");
-					} catch (err) {
-						const errMsg = err instanceof Error ? err.message : String(err);
-						log.logWarning("Failed to delete message for silent response", errMsg);
-					}
+				// Check if yield_no_action was called — skip posting final response
+				if (wasYielded()) {
+					log.logInfo("yield_no_action — no output posted");
+					resetYield();
 				} else if (finalText.trim()) {
 					try {
 						const mainText =

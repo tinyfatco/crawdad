@@ -17,6 +17,7 @@ import { type AgentRunner, getOrCreateRunner } from "./agent.js";
 import { handleSlashCommand } from "./commands.js";
 import { MomSettingsManager } from "./context.js";
 import { downloadChannel } from "./download.js";
+import { ChannelPulse } from "./engagement/channel-pulse.js";
 import { computeWakeManifest, createEventsWatcher } from "./events.js";
 import { Gateway } from "./gateway.js";
 import * as log from "./log.js";
@@ -24,6 +25,7 @@ import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.
 import { ChannelStore } from "./store.js";
 import { createPingTool } from "./tools/ping.js";
 import { createSetWorkingChannelTool } from "./tools/set-working-channel.js";
+import { createYieldNoActionTool } from "./tools/yield-no-action.js";
 
 // ============================================================================
 // Channel labeling — human-readable names for messages in the awareness context
@@ -227,6 +229,62 @@ log.logInfo(`[perf] sandbox validated: ${(performance.now() - T_BOOT).toFixed(0)
 
 type AdapterWithHandler = PlatformAdapter & { setHandler(h: MomHandler): void };
 
+// ============================================================================
+// Channel Pulse — shared activity tracker for ambient engagement
+// ============================================================================
+
+// Pulse is created early with a placeholder selfId. Updated after Slack auth.
+const pulse = new ChannelPulse("pending");
+
+// Cooldown: after an ambient engagement, don't re-evaluate for this many ms
+const AMBIENT_COOLDOWN_MS = 45_000; // 45 seconds
+const ambientCooldowns = new Map<string, number>();
+
+/** Called by Slack adapters when a non-self, non-mention message arrives in a channel. */
+function handleAmbientMessage(channelId: string, event: MomEvent): void {
+	// Don't ambient-engage in DMs — those are handled directly
+	if (channelId.startsWith("D")) return;
+
+	// Check cooldown
+	const lastAmbient = ambientCooldowns.get(channelId) ?? 0;
+	if (Date.now() - lastAmbient < AMBIENT_COOLDOWN_MS) return;
+
+	// Check if agent is currently running
+	if (awareness?.running) return;
+
+	// Check pulse: have I spoken recently? (< 45s = too soon)
+	const timeSince = pulse.timeSinceMyLast(channelId);
+	if (timeSince < AMBIENT_COOLDOWN_MS) return;
+
+	// All gates passed — fire ambient engagement
+	ambientCooldowns.set(channelId, Date.now());
+
+	const pulseSummary = pulse.summary(channelId);
+	log.logInfo(`[ambient:${channelId}] Evaluating engagement (temp=${pulseSummary.temperature}, sinceMyLast=${Math.round(pulseSummary.timeSinceMyLastMs / 1000)}s, participants=${pulseSummary.recentParticipants})`);
+
+	// Find the Slack adapter that owns this channel
+	const slackAdapter = adapters.find((a) => a.name === "slack" && a.getChannel(channelId));
+	if (!slackAdapter) return;
+
+	// Create an ambient event — the agent decides whether to speak
+	const ambientEvent: MomEvent = {
+		type: "mention",
+		channel: channelId,
+		ts: event.ts,
+		user: event.user,
+		text: `[AMBIENT] A conversation is happening in this channel. Here's the latest message:\n\n${event.text}\n\nChannel pulse: ${pulseSummary.temperature} messages in last 15min, ${pulseSummary.recentParticipants} participants, you last spoke ${pulseSummary.timeSinceMyLastMs === Infinity ? "never" : Math.round(pulseSummary.timeSinceMyLastMs / 1000) + "s ago"}.\n\nYou're observing this conversation naturally. If you have something genuinely useful, interesting, or fun to add — respond naturally as a participant. Keep it brief and conversational. If you have nothing to add, respond with exactly: PASS`,
+	};
+
+	const queue = (slackAdapter as any).getQueue?.(channelId);
+	if (queue) {
+		queue.enqueue(async () => {
+			// Re-check: agent might have started running while queued
+			if (awareness?.running) return;
+			await handler.handleEvent(ambientEvent, slackAdapter);
+		});
+	}
+}
+
 function createAdapter(name: string): AdapterWithHandler {
 	switch (name) {
 		case "slack":
@@ -238,7 +296,7 @@ function createAdapter(name: string): AdapterWithHandler {
 				process.exit(1);
 			}
 			const store = new ChannelStore({ workingDir, botToken });
-			return new SlackSocketAdapter({ appToken, botToken, workingDir, store });
+			return new SlackSocketAdapter({ appToken, botToken, workingDir, store, pulse, onAmbientMessage: handleAmbientMessage });
 		}
 		case "slack:webhook": {
 			const botToken = process.env.MOM_SLACK_BOT_TOKEN;
@@ -248,7 +306,7 @@ function createAdapter(name: string): AdapterWithHandler {
 				process.exit(1);
 			}
 			const store = new ChannelStore({ workingDir, botToken });
-			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret });
+			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, pulse, onAmbientMessage: handleAmbientMessage });
 		}
 		case "telegram":
 		case "telegram:polling": {
@@ -348,6 +406,7 @@ function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstruc
 		const awarenessDir = join(workingDir, AWARENESS_DIR);
 		const extraTools = [
 			createPingTool(adapters),
+			createYieldNoActionTool(),
 			createSetWorkingChannelTool(adapters, (newChannelId: string) => {
 				for (const a of adapters) {
 					const channel = a.getChannel(newChannelId);
