@@ -556,10 +556,18 @@ function createRunner(
 				const textParts: string[] = [];
 				for (const part of content) {
 					if (part.type === "thinking") {
-						thinkingParts.push((part as any).thinking);
+						// Only extract .thinking text — never .signature or other fields
+						const thinkingText = (part as any).thinking;
+						if (typeof thinkingText === "string" && thinkingText.trim()) {
+							thinkingParts.push(thinkingText);
+						}
 					} else if (part.type === "text") {
-						textParts.push((part as any).text);
+						const t = (part as any).text;
+						if (typeof t === "string") {
+							textParts.push(t);
+						}
 					}
+					// Silently skip unknown content block types (e.g. signature blocks)
 				}
 
 				const text = textParts.join("\n");
@@ -573,11 +581,14 @@ function createRunner(
 					queue.enqueueMessage(formatted, "thread", "thinking thread", false);
 				}
 
-				if (text.trim()) {
+				// Guard: skip text that looks like leaked debug output or serialized objects
+				if (text.trim() && !text.trim().startsWith("(Empty response:") && !text.trim().startsWith("{'content':")) {
 					log.logResponse(logCtx, text);
 					ctx.emitContentBlock?.({ type: "text", text });
 					queue.enqueueMessage(text, "main", "response main");
 					queue.enqueueMessage(text, "thread", "response thread", false);
+				} else if (text.trim()) {
+					log.logWarning("Suppressed leaked debug output from response", text.substring(0, 100));
 				}
 			}
 		} else if (event.type === "auto_compaction_start") {
@@ -834,12 +845,14 @@ function createRunner(
 				if (wasYielded()) {
 					log.logInfo("yield_no_action — no output posted");
 					resetYield();
-				} else if (finalText.trim()) {
+				} else if (finalText.trim() && !finalText.trim().startsWith("(Empty response:") && !finalText.trim().startsWith("{'content':")) {
 					try {
+						// Hard cap: never post more than 40KB (signature blobs can be hundreds of KB)
+						const cappedText = finalText.length > 40000 ? finalText.substring(0, 40000) + "\n\n_(truncated)_" : finalText;
 						const mainText =
-							finalText.length > MAX_MESSAGE_LENGTH
-								? `${finalText.substring(0, MAX_MESSAGE_LENGTH - 50)}\n\n_(see thread for full response)_`
-								: finalText;
+							cappedText.length > MAX_MESSAGE_LENGTH
+								? `${cappedText.substring(0, MAX_MESSAGE_LENGTH - 50)}\n\n_(see thread for full response)_`
+								: cappedText;
 						await ctx.sendFinalResponse(mainText);
 					} catch (err) {
 						const errMsg = err instanceof Error ? err.message : String(err);
