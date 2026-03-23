@@ -23,6 +23,7 @@ import { Gateway } from "./gateway.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
+import { createBrowserTools } from "./tools/browser/index.js";
 import { createMoveToChannelTool } from "./tools/move-to-channel.js";
 import { createSendMessageToChannelTool } from "./tools/send-message-to-channel.js";
 import { createYieldNoActionTool } from "./tools/yield-no-action.js";
@@ -436,6 +437,7 @@ function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstruc
 		const extraTools = [
 			createSendMessageToChannelTool(adapters),
 			createYieldNoActionTool(),
+			...createBrowserTools(),
 			createMoveToChannelTool(adapters, (newChannelId: string) => {
 				for (const a of adapters) {
 					const channel = a.getChannel(newChannelId);
