@@ -49,6 +49,8 @@ export interface AwarenessEntry {
   stopReason?: string;
   /** True while SSE is actively streaming this entry */
   isStreaming?: boolean;
+  /** True if this is an ambient engagement trigger */
+  isAmbient?: boolean;
 }
 
 /** Parse the [timestamp] [channel] [user]: text prefix from user messages */
@@ -107,6 +109,11 @@ export function parseContextLine(line: string): AwarenessEntry | null {
             entry.channel = parsed.channel;
             entry.userName = parsed.userName;
             entry.strippedText = parsed.strippedText;
+            // Detect ambient engagement messages
+            if (parsed.strippedText.startsWith('[AMBIENT]')) {
+              entry.isAmbient = true;
+              entry.userName = 'system';
+            }
           } else if (cleaned !== textBlock.text) {
             // Session context was stripped but no prefix found — use cleaned text
             entry.strippedText = cleaned;

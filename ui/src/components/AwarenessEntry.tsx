@@ -144,6 +144,34 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
       );
     }
 
+    // Ambient engagement — show as a compact trigger with conversation snippet
+    if (entry.isAmbient) {
+      const ambientText = text.replace(/^\[AMBIENT\]\s*/, '');
+      // Extract just the conversation lines (between "Recent messages:" and "Channel pulse:")
+      const convoMatch = ambientText.match(/Recent messages:\s*\n\n([\s\S]*?)\n\nChannel pulse:/);
+      const convoLines = convoMatch ? convoMatch[1].trim() : '';
+      const pulseMatch = ambientText.match(/Channel pulse:\s*(.*?)\.?\s*$/m);
+      const pulseInfo = pulseMatch ? pulseMatch[1] : '';
+
+      return (
+        <div className="awareness-entry ambient-entry">
+          <div className="event-header">
+            {entry.channel && <ChannelBadge channel={entry.channel} />}
+            <span className="event-icon">{'\u25C8'}</span>
+            <span className="event-name">ambient</span>
+            {pulseInfo && <span className="ambient-pulse">{pulseInfo}</span>}
+          </div>
+          {convoLines && (
+            <div className="ambient-conversation">
+              {convoLines.split('\n').map((line, i) => (
+                <div key={i} className="ambient-line">{line}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     return (
       <div className="awareness-entry user-entry">
         <div className="awareness-meta">

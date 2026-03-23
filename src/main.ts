@@ -276,21 +276,22 @@ function handleAmbientMessage(channelId: string, _event: MomEvent): void {
 
 		const refreshedSummary = pulse.summary(channelId);
 
-		// Format recent messages for the agent
-		const messageLines = recentMessages.map((m) => {
-			const who = m.participantId;
-			return `<${who}>: ${m.text}`;
-		}).join("\n");
-
 		// Find the Slack adapter that owns this channel
 		const slackAdapter = adapters.find((a) => a.name === "slack" && a.getChannel(channelId));
 		if (!slackAdapter) return;
+
+		// Format recent messages — resolve Slack user IDs to display names
+		const messageLines = recentMessages.map((m) => {
+			const user = slackAdapter.getUser(m.participantId);
+			const who = user ? `${user.displayName} (${m.participantId})` : m.participantId;
+			return `${who}: ${m.text}`;
+		}).join("\n");
 
 		const ambientEvent: MomEvent = {
 			type: "mention",
 			channel: channelId,
 			ts: String(Date.now() / 1000),
-			user: "ambient",
+			user: "system",
 			text: `[AMBIENT] A conversation is happening in this channel. Recent messages:\n\n${messageLines}\n\nChannel pulse: ${refreshedSummary.temperature} messages in last 15min, ${refreshedSummary.recentParticipants} participants, you last spoke ${refreshedSummary.timeSinceMyLastMs === Infinity ? "never" : Math.round(refreshedSummary.timeSinceMyLastMs / 1000) + "s ago"}.\n\nYou're observing this conversation naturally. If you have something genuinely useful, interesting, or fun to add — respond naturally as a participant. Keep it brief and conversational. If you have nothing to add, use the yield_no_action tool.`,
 		};
 
