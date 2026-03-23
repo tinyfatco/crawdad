@@ -236,41 +236,48 @@ type AdapterWithHandler = PlatformAdapter & { setHandler(h: MomHandler): void };
 // Pulse is created early with a placeholder selfId. Updated after Slack auth.
 const pulse = new ChannelPulse("pending");
 
-// Cooldown: after an ambient engagement, don't re-evaluate for this many ms
+// Ambient engagement: deferred batch evaluation
+// Instead of dropping messages during cooldown, we defer — schedule one evaluation
+// for when the cooldown expires. The pulse already has all the messages, so we just
+// need to ensure a timer is scheduled.
 const AMBIENT_COOLDOWN_MS = 45_000; // 45 seconds
-const ambientCooldowns = new Map<string, number>();
+const ambientTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const ambientLastFired = new Map<string, number>();
 
-/** Called by Slack adapters when a non-self, non-mention message arrives in a channel. */
+/** Schedule (or re-schedule) an ambient evaluation for a channel. */
 function handleAmbientMessage(channelId: string, _event: MomEvent): void {
 	// Don't ambient-engage in DMs — those are handled directly
 	if (channelId.startsWith("D")) return;
 
-	// Check cooldown
-	const lastAmbient = ambientCooldowns.get(channelId) ?? 0;
-	if (Date.now() - lastAmbient < AMBIENT_COOLDOWN_MS) return;
+	// If a timer is already pending for this channel, we're good — it will
+	// pick up all recent messages from the pulse when it fires.
+	if (ambientTimers.has(channelId)) return;
 
-	// Check if agent is currently running
-	if (awareness?.running) return;
+	// Calculate delay: either fire after debounce (no cooldown) or defer to cooldown end
+	const lastFired = ambientLastFired.get(channelId) ?? 0;
+	const timeSinceLast = Date.now() - lastFired;
+	const cooldownRemaining = Math.max(0, AMBIENT_COOLDOWN_MS - timeSinceLast);
 
-	// Check pulse: have I spoken recently? (< 45s = too soon)
-	const timeSince = pulse.timeSinceMyLast(channelId);
-	if (timeSince < AMBIENT_COOLDOWN_MS) return;
-
-	// All gates passed — schedule ambient engagement with debounce
-	ambientCooldowns.set(channelId, Date.now());
-
-	// Random debounce: 5-30s delay so multiple agents don't all respond at once
+	// Add random debounce (5-30s) so multiple agents don't pile on
 	const debounceMs = 5000 + Math.random() * 25000;
+	const delayMs = Math.max(debounceMs, cooldownRemaining);
 
 	const pulseSummary = pulse.summary(channelId);
-	log.logInfo(`[ambient:${channelId}] Scheduling engagement in ${(debounceMs / 1000).toFixed(0)}s (temp=${pulseSummary.temperature}, sinceMyLast=${Math.round(pulseSummary.timeSinceMyLastMs / 1000)}s, participants=${pulseSummary.recentParticipants})`);
+	log.logInfo(`[ambient:${channelId}] Scheduling engagement in ${(delayMs / 1000).toFixed(0)}s (temp=${pulseSummary.temperature}, sinceMyLast=${Math.round(pulseSummary.timeSinceMyLastMs / 1000)}s, participants=${pulseSummary.recentParticipants})`);
 
-	setTimeout(() => {
-		// Re-check all conditions after debounce
-		if (awareness?.running) return;
-		if (pulse.timeSinceMyLast(channelId) < AMBIENT_COOLDOWN_MS) return;
+	const timerId = setTimeout(() => {
+		ambientTimers.delete(channelId);
+		ambientLastFired.set(channelId, Date.now());
 
-		// Get recent messages from the last 5 minutes for context
+		// Check if agent is currently running — if so, re-defer
+		if (awareness?.running) {
+			log.logInfo(`[ambient:${channelId}] Agent busy, re-deferring`);
+			// Re-schedule for 10s later
+			handleAmbientMessage(channelId, _event);
+			return;
+		}
+
+		// Get recent messages from the pulse
 		const recentMessages = pulse.recentMessages(channelId);
 		if (recentMessages.length === 0) return;
 
@@ -302,7 +309,9 @@ function handleAmbientMessage(channelId: string, _event: MomEvent): void {
 				await handler.handleEvent(ambientEvent, slackAdapter);
 			});
 		}
-	}, debounceMs);
+	}, delayMs);
+
+	ambientTimers.set(channelId, timerId);
 }
 
 function createAdapter(name: string): AdapterWithHandler {
