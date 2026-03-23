@@ -11,7 +11,7 @@ export interface PulseEntry {
 	ts: number; // Date.now() millis
 	participantId: string;
 	textLength: number;
-	/** First ~300 chars of message text, for ambient context. */
+	/** Full message text, for ambient context. Never truncated. */
 	text?: string;
 }
 
@@ -38,7 +38,7 @@ export class ChannelPulse {
 			buf = [];
 			this.buffers.set(channelId, buf);
 		}
-		buf.push({ ts: Date.now(), participantId, textLength, text: text?.substring(0, 300) });
+		buf.push({ ts: Date.now(), participantId, textLength, text });
 		// Ring buffer: trim from front
 		if (buf.length > BUFFER_SIZE) {
 			buf.splice(0, buf.length - BUFFER_SIZE);
