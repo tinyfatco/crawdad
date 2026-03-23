@@ -43,7 +43,6 @@ async function isReady(): Promise<boolean> {
 
 function startChrome(): void {
 	const chromePath = getChromePath();
-	const isHeadless = process.platform !== "darwin" && !process.env.DISPLAY;
 
 	const chromeArgs = [
 		`--remote-debugging-port=${CHROME_PORT}`,
@@ -55,29 +54,16 @@ function startChrome(): void {
 		"--disable-backgrounding-occluded-windows",
 		"--disable-gpu",
 		"--disable-dev-shm-usage",
+		// Always use headless — we don't need a visible window, just the CDP protocol.
+		// Even with DISPLAY set, headless is more reliable in containers.
+		"--headless",
 	];
 
-	if (isHeadless) {
-		chromeArgs.push("--headless");
-	}
-
 	execSync(`mkdir -p "${USER_DATA_DIR}"`, { stdio: "ignore" });
-
-	const env = { ...process.env };
-	if (process.platform === "linux" && !env.DISPLAY) {
-		for (const display of [":99", ":9", ":1", ":0"]) {
-			try {
-				execSync(`DISPLAY=${display} xdpyinfo`, { stdio: "ignore", timeout: 1000 });
-				env.DISPLAY = display;
-				break;
-			} catch {}
-		}
-	}
 
 	const chrome = spawn(chromePath, chromeArgs, {
 		detached: true,
 		stdio: "ignore",
-		env,
 	});
 	chrome.unref();
 }
