@@ -51,6 +51,8 @@ export interface AwarenessEntry {
   isStreaming?: boolean;
   /** True if this is an ambient engagement trigger */
   isAmbient?: boolean;
+  /** True if this is a system action (/model, /compact, etc.) */
+  isSystemAction?: boolean;
 }
 
 /** Parse the [timestamp] [channel] [user]: text prefix from user messages */
@@ -113,6 +115,10 @@ export function parseContextLine(line: string): AwarenessEntry | null {
             if (parsed.strippedText.startsWith('[AMBIENT]')) {
               entry.isAmbient = true;
               entry.userName = 'system';
+            }
+            // Detect system actions (/model, /compact, etc.)
+            if (parsed.userName === 'system' && parsed.strippedText.startsWith('/')) {
+              entry.isSystemAction = true;
             }
           } else if (cleaned !== textBlock.text) {
             // Session context was stripped but no prefix found — use cleaned text

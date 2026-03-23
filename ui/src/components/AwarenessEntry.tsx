@@ -132,15 +132,36 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
       const eventSource = eventMatch[2]; // e.g. "heartbeat" (optional)
       const eventDesc = (eventMatch[3] || '').trim();
       const label = eventSource || eventFile;
+      // Heartbeat events always show as heartbeat channel, regardless of target channelId
+      const displayChannel = (eventFile === 'heartbeat' || eventSource === 'heartbeat') ? 'heartbeat' : entry.channel;
       // Truncate long descriptions to first sentence
       const shortDesc = eventDesc.length > 60 ? eventDesc.substring(0, 60) + '...' : eventDesc;
       return (
         <EventEntry
-          channel={entry.channel}
+          channel={displayChannel}
           label={label}
           description={shortDesc}
           fullDescription={eventDesc.length > 60 ? eventDesc : undefined}
         />
+      );
+    }
+
+    // System actions (/model, /compact, etc.) — compact inline indicator
+    if (entry.isSystemAction) {
+      // e.g. "/model → fireworks/minimax-m2p5" or "/compact 437 → 12 messages"
+      const actionText = text.startsWith('/') ? text : text;
+      const cmdMatch = actionText.match(/^(\/\w+)\s*(.*)/);
+      const cmd = cmdMatch ? cmdMatch[1] : '/action';
+      const detail = cmdMatch ? cmdMatch[2] : actionText;
+
+      return (
+        <div className="awareness-entry system-action-entry">
+          <div className="event-header">
+            {entry.timestamp && <span className="entry-timestamp">{formatTime(entry.timestamp)}</span>}
+            <span className="system-action-cmd">{cmd}</span>
+            {detail && <span className="system-action-detail">{detail}</span>}
+          </div>
+        </div>
       );
     }
 

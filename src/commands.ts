@@ -5,13 +5,34 @@
  * before the message reaches the agent loop.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import { randomUUID } from "crypto";
 import type { PlatformAdapter } from "./adapters/types.js";
 import type { AgentRunner } from "./agent.js";
 import { findModel, listModels, resolveModel } from "./model-config.js";
 import * as log from "./log.js";
 import { formatUsageSummary, formatTokens } from "./log.js";
+
+/** Write a system action to context.jsonl so it shows in the awareness stream. */
+function logSystemAction(workingDir: string, channelLabel: string, text: string): void {
+	const contextFile = join(workingDir, "awareness", "context.jsonl");
+	const entry = {
+		type: "message",
+		id: randomUUID().substring(0, 8),
+		parentId: null,
+		timestamp: new Date().toISOString(),
+		message: {
+			role: "user",
+			content: [{ type: "text", text: `[${new Date().toISOString()}] [${channelLabel}] [system]: ${text}` }],
+		},
+	};
+	try {
+		appendFileSync(contextFile, JSON.stringify(entry) + "\n");
+	} catch {
+		// awareness dir may not exist yet on first boot
+	}
+}
 
 /**
  * Handle a slash command. Returns true if the command was handled.
@@ -37,7 +58,7 @@ export async function handleSlashCommand(
 			await handleContextCommand(channelId, platform, runner);
 			return true;
 		case "/compact":
-			await handleCompactCommand(parts.slice(1), channelId, platform, runner);
+			await handleCompactCommand(parts.slice(1), channelId, workingDir, platform, runner);
 			return true;
 		case "/clear":
 			await handleClearCommand(channelId, platform, runner);
@@ -132,6 +153,7 @@ async function handleModelCommand(
 	writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
 
 	log.logInfo(`Model switched to ${match.provider}/${match.id} via /model command`);
+	logSystemAction(workingDir, "system", `/model → ${match.provider}/${match.id}`);
 	await platform.postMessage(
 		channelId,
 		`Switched to *${match.provider}/${match.id}*\n_(takes effect on next message)_`,
@@ -207,6 +229,7 @@ async function handleContextCommand(
 async function handleCompactCommand(
 	args: string[],
 	channelId: string,
+	workingDir: string,
 	platform: PlatformAdapter,
 	runner?: AgentRunner,
 ): Promise<void> {
@@ -221,6 +244,7 @@ async function handleCompactCommand(
 		const instructions = args.length > 0 ? args.join(" ") : undefined;
 		const result = await runner.compact(instructions);
 
+		logSystemAction(workingDir, "system", `/compact ${result.messagesBefore} → ${result.messagesAfter} messages (${formatTokens(result.tokensBefore)} tokens summarized)`);
 		await platform.postMessage(
 			channelId,
 			`_Compacted: ${result.messagesBefore} → ${result.messagesAfter} messages (${formatTokens(result.tokensBefore)} tokens summarized)_`,

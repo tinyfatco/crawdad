@@ -472,6 +472,28 @@ html, body, #root {
   word-break: break-word;
 }
 
+/* System actions (/model, /compact) — compact inline indicator */
+.awareness-entry.system-action-entry {
+  display: flex;
+  align-items: center;
+  padding: 0.15rem 0.75rem;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.system-action-cmd {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-right: 0.3rem;
+}
+
+.system-action-detail {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
 /* Silent responses — minimal dot + label */
 .awareness-entry.silent-entry {
   display: flex;
@@ -520,6 +542,7 @@ html, body, #root {
 
 .awareness-entry.assistant-entry .markdown-content p { margin-bottom: 0.4rem; }
 .awareness-entry.assistant-entry .markdown-content p:last-child { margin-bottom: 0; }
+.awareness-entry.assistant-entry .markdown-content hr { margin-bottom: 0.6rem; margin-top: 0.4rem; }
 .awareness-entry.assistant-entry ul,
 .awareness-entry.assistant-entry ol { margin: 0.4rem 0; padding-left: 1.5rem; }
 
