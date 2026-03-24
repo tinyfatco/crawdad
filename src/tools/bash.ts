@@ -7,6 +7,8 @@ import { Type } from "@sinclair/typebox";
 import type { Executor } from "../sandbox.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateTail } from "./truncate.js";
 
+const DEFAULT_TIMEOUT = 60;
+
 /**
  * Generate a unique temp file path for bash output
  */
@@ -18,7 +20,7 @@ function getTempFilePath(): string {
 const bashSchema = Type.Object({
 	label: Type.String({ description: "Brief description of what this command does (shown to user)" }),
 	command: Type.String({ description: "Bash command to execute" }),
-	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (default: 60s). Increase for intentionally long-running commands." })),
 });
 
 interface BashToolDetails {
@@ -30,7 +32,7 @@ export function createBashTool(executor: Executor): AgentTool<typeof bashSchema>
 	return {
 		name: "bash",
 		label: "bash",
-		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Default timeout: ${DEFAULT_TIMEOUT}s. Increase for intentionally long-running commands.`,
 		parameters: bashSchema,
 		execute: async (
 			_toolCallId: string,
@@ -41,7 +43,7 @@ export function createBashTool(executor: Executor): AgentTool<typeof bashSchema>
 			let tempFilePath: string | undefined;
 			let tempFileStream: ReturnType<typeof createWriteStream> | undefined;
 
-			const result = await executor.exec(command, { timeout, signal });
+			const result = await executor.exec(command, { timeout: timeout ?? DEFAULT_TIMEOUT, signal });
 			let output = "";
 			if (result.stdout) output += result.stdout;
 			if (result.stderr) {
