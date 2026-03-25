@@ -773,8 +773,30 @@ log.logInfo(`[perf] all adapters started: ${(performance.now() - T_BOOT).toFixed
 	}
 }
 
-// Start events watcher AFTER seeding (so it picks up heartbeat.json immediately)
-const eventsWatcher = createEventsWatcher(workingDir, adapters);
+// Seed auto-compaction event — runs at 4am daily, cleans up context
+{
+	const { writeFileSync: writeCompaction } = await import("fs");
+	const compactionFile = join(workingDir, "events", "compaction.json");
+	const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+	const compactionEvent = {
+		type: "periodic",
+		schedule: "0 4 * * *",
+		timezone: tz,
+		text: "auto-compaction",
+		action: "compact",
+	};
+	writeCompaction(compactionFile, JSON.stringify(compactionEvent, null, 2), "utf-8");
+	log.logInfo(`Wrote compaction.json (daily 4am, tz=${tz})`);
+}
+
+// Start events watcher AFTER seeding (so it picks up heartbeat.json + compaction.json immediately)
+const eventsWatcher = createEventsWatcher(workingDir, adapters, {
+	onCompact: async () => {
+		if (!awareness) throw new Error("No awareness — nothing to compact");
+		const result = await awareness.runner.compact("Summarize the conversation history. Preserve key facts, decisions, pending tasks, and recent tool results. Discard redundant exchanges.");
+		log.logInfo(`[auto-compact] ${result.messagesBefore} → ${result.messagesAfter} messages`);
+	},
+});
 eventsWatcher.start();
 log.logInfo(`[perf] events watcher started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 

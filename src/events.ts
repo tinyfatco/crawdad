@@ -32,6 +32,8 @@ export interface PeriodicEvent {
 	spontaneity?: number;
 	/** Suppress fires during this window (HH:MM format, e.g. "23:00"-"07:00") */
 	quietHours?: { start: string; end: string };
+	/** If set, triggers a maintenance action instead of an agent run */
+	action?: "compact";
 }
 
 export type ScheduledEvent = ImmediateEvent | OneShotEvent | PeriodicEvent;
@@ -96,11 +98,15 @@ export class EventsWatcher {
 	private watcher: FSWatcher | null = null;
 	private knownFiles: Set<string> = new Set();
 
+	private onCompact?: () => Promise<void>;
+
 	constructor(
 		private eventsDir: string,
 		private adapters: PlatformAdapter[],
+		options?: { onCompact?: () => Promise<void> },
 	) {
 		this.startTime = Date.now();
+		this.onCompact = options?.onCompact;
 	}
 
 	/**
@@ -439,6 +445,19 @@ export class EventsWatcher {
 				break;
 		}
 
+		// Handle maintenance actions (compact) — no agent run, just the operation
+		if (event.type === "periodic" && (event as PeriodicEvent).action === "compact") {
+			if (this.onCompact) {
+				log.logInfo(`[auto-compact] Triggered by ${filename}`);
+				this.onCompact().then(() => {
+					log.logInfo("[auto-compact] Complete");
+				}).catch((err) => {
+					log.logInfo(`[auto-compact] Skipped: ${err instanceof Error ? err.message : String(err)}`);
+				});
+			}
+			return;
+		}
+
 		const message = `[EVENT:${filename}:${event.type}:${scheduleInfo}] ${event.text}`;
 
 		// Create synthetic event
@@ -492,9 +511,13 @@ export class EventsWatcher {
 /**
  * Create and start an events watcher.
  */
-export function createEventsWatcher(workspaceDir: string, adapters: PlatformAdapter[]): EventsWatcher {
+export function createEventsWatcher(
+	workspaceDir: string,
+	adapters: PlatformAdapter[],
+	options?: { onCompact?: () => Promise<void> },
+): EventsWatcher {
 	const eventsDir = join(workspaceDir, "events");
-	return new EventsWatcher(eventsDir, adapters);
+	return new EventsWatcher(eventsDir, adapters, options);
 }
 
 // ============================================================================
