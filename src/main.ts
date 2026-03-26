@@ -730,6 +730,59 @@ await Promise.all(adapters.map(async (adapter, i) => {
 }));
 log.logInfo(`[perf] all adapters started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
+// Seed HEARTBEAT.md and settings.json if they don't exist (first boot for new agents)
+{
+	const { existsSync: seedExists, writeFileSync: seedWrite } = await import("fs");
+	const heartbeatMdPath = join(workingDir, "HEARTBEAT.md");
+	if (!seedExists(heartbeatMdPath)) {
+		seedWrite(heartbeatMdPath, `# Heartbeat Checklist
+
+This file controls what you do when you wake up for a spontaneous reflection.
+Each heartbeat, the contents of this file are injected into your prompt. Edit
+it to change your own periodic behavior.
+
+## Current checklist
+
+- Check if any recent messages went unanswered
+- If your owner has been quiet for a while, consider a brief check-in
+- Note anything interesting in your context — patterns, pending items, things to watch
+
+## How heartbeat works
+
+You wake up periodically based on your spontaneity settings in \`settings.json\`:
+
+- **level** (1-5): Controls how often you wake. 1 = ~once/day, 5 = ~every 30-60min.
+- **spontaneity** (0-1): Adds jitter so you don't fire at exact intervals. 0.25 = ±25%.
+- **quietHours**: Time window where heartbeats are suppressed (e.g. "23:00"-"07:00").
+- **enabled**: Set to false to turn off heartbeats entirely.
+
+To change these, edit \`settings.json\` directly.
+
+## Tips
+
+- Keep this file short — it's included in every heartbeat prompt.
+- If you clear this file (leave it empty), heartbeats will be skipped entirely.
+- Use \`move_to_channel\` to reach out on email/Telegram/Slack if something needs attention.
+- Use \`yield_no_action\` if nothing needs doing — the quiet is recorded.
+- You can update this file yourself to evolve your own periodic behavior.
+`, "utf-8");
+		log.logInfo("Seeded HEARTBEAT.md");
+	}
+
+	const settingsPath = join(workingDir, "settings.json");
+	if (!seedExists(settingsPath)) {
+		seedWrite(settingsPath, JSON.stringify({
+			spontaneity: {
+				enabled: true,
+				level: 1,
+				spontaneity: 0.25,
+				quietHours: { start: "23:00", end: "07:00" },
+			},
+		}, null, 2) + "\n", "utf-8");
+		log.logInfo("Seeded settings.json (spontaneity level 1, variance 0.25)");
+	}
+}
+
 // Write heartbeat event file from settings.json on every boot (settings is authoritative)
 {
 	const { existsSync, mkdirSync, writeFileSync, unlinkSync } = await import("fs");
