@@ -93,6 +93,7 @@ export class TelegramWebhookAdapter extends TelegramBase {
 			res.writeHead(200);
 			res.end();
 
+			log.logInfo(`[telegram:webhook] dispatch: processing update at ${new Date().toISOString()}`);
 			// Process the update — fires bot.on("message") which calls handleIncomingMessage
 			this.bot.processUpdate(update as Parameters<typeof this.bot.processUpdate>[0]);
 		});

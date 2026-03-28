@@ -376,7 +376,17 @@ When mentioning users, use @username format.`;
 			queue = [];
 			this.queues.set(channelId, queue);
 		}
-		queue.push(work);
+		const enqueuedAt = Date.now();
+		queue.push(async () => {
+			const waitMs = Date.now() - enqueuedAt;
+			if (waitMs > 500) {
+				log.logInfo(`[queue] ${channelId} work waited ${waitMs}ms in queue (depth was ${queue!.length})`);
+			}
+			return work();
+		});
+		if (this.processing.get(channelId)) {
+			log.logInfo(`[queue] ${channelId} enqueued (queue depth=${queue.length}, processing=true)`);
+		}
 		this.processQueue(channelId);
 	}
 

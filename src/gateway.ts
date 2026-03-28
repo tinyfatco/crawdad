@@ -428,11 +428,13 @@ export class Gateway {
 				}
 
 				if (!this.readyRoutes.has(urlPath)) {
+					log.logInfo(`[gateway] POST ${urlPath} → 503 (not ready)`);
 					res.writeHead(503);
 					res.end("Adapter not ready");
 					return;
 				}
 
+				log.logInfo(`[gateway] POST ${urlPath} received at ${new Date().toISOString()}`);
 				handler(req, res);
 				return;
 			}
