@@ -569,10 +569,14 @@ const handler: MomHandler = {
 				}
 			}
 		} catch (err) {
+			const errMsg = err instanceof Error ? err.message : String(err);
 			log.logWarning(
 				`[${platform.name}:${event.channel}] Run error`,
-				err instanceof Error ? err.message : String(err),
+				errMsg,
 			);
+			try {
+				await platform.postMessage(event.channel, `⚠ Run failed: ${errMsg}`);
+			} catch { /* best-effort */ }
 		} finally {
 			state.running = false;
 		}
