@@ -14,7 +14,7 @@ import { WebVoiceBridgeAdapter, handleWebVoiceSession } from "./adapters/web-voi
 import { handleTerminalUpgrade } from "./terminal.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
-import { handleSlashCommand } from "./commands.js";
+import { handleSlashCommand, resolvePendingInput } from "./commands.js";
 import { MomSettingsManager } from "./context.js";
 import { downloadChannel } from "./download.js";
 import { ChannelPulse } from "./engagement/channel-pulse.js";
@@ -533,6 +533,11 @@ const handler: MomHandler = {
 	},
 
 	async handleEvent(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<void> {
+		// Check for pending input (e.g. /login waiting for pasted URL)
+		if (!isEvent && resolvePendingInput(event.channel, event.text)) {
+			return;
+		}
+
 		// Ensure awareness is initialized (needed for /context and other commands)
 		const state = getAwareness(event.channel, platform, platform.formatInstructions);
 
