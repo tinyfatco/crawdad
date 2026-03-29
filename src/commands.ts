@@ -348,81 +348,95 @@ async function handleLoginCommand(
 
 	await platform.postMessage(channelId, `_Starting ${provider.name} login..._`);
 
-	try {
-		await authStorage.login(providerId, {
-			onAuth: async (info) => {
-				let msg = `*Open this URL in your browser:*\n\n${info.url}\n\n`;
-				if (info.instructions) {
-					msg += `${info.instructions}\n\n`;
-				}
-				msg += `After authorizing, your browser will redirect to a \`localhost\` URL that won't load — that's expected. Copy the *full URL* from your browser's address bar and paste it here.`;
-				await platform.postMessage(channelId, msg);
-			},
-			onPrompt: async (prompt) => {
-				await platform.postMessage(channelId, prompt.message);
-				const input = await waitForInput(channelId);
-				return input;
-			},
-			onManualCodeInput: async () => {
-				const input = await waitForInput(channelId);
-				return input;
-			},
-			onProgress: async (message) => {
-				await platform.postMessage(channelId, `_${message}_`);
-			},
-		});
-
-		// Login succeeded — auth.json is written by AuthStorage.
-		// Now persist to platform secrets so it survives container restart.
-		// Maps provider IDs to platform secret keys (must match crawdad-cf hydrate.ts FILE_RULES).
-		const secretKeyMap: Record<string, string> = {
-			"openai-codex": "codex_credentials",
-		};
-		const secretKey = secretKeyMap[providerId];
-		const toolsToken = process.env.FAT_TOOLS_TOKEN;
-		if (toolsToken && secretKey) {
-			try {
-				const authPath = join(homedir(), ".pi", "agent", "auth.json");
-				const authData = JSON.parse(readFileSync(authPath, "utf-8"));
-				const creds = authData[providerId];
-				if (creds) {
-					// Strip the "type" field — platform stores raw OAuth creds
-					const { type: _, ...rawCreds } = creds;
-					const resp = await fetch("https://tinyfat.com/api/agent/secrets", {
-						method: "PATCH",
-						headers: {
-							"Authorization": `Bearer ${toolsToken}`,
-							"Content-Type": "application/json",
-						},
-						body: JSON.stringify({ [secretKey]: JSON.stringify(rawCreds) }),
-					});
-					if (resp.ok) {
-						log.logInfo(`[/login] Credentials for ${providerId} persisted to platform`);
-					} else {
-						log.logWarning(`[/login] Failed to persist credentials: ${resp.status}`);
-						await platform.postMessage(
-							channelId,
-							`⚠ Logged in but failed to persist credentials (${resp.status}). They may be lost on container restart.`,
-						);
+	// Fire-and-forget: the login flow waits for user input via waitForInput(),
+	// which is resolved by adapter-level resolvePendingInput(). If we awaited
+	// this here, we'd block the adapter's work queue and deadlock — subsequent
+	// messages (including the pasted URL) would never reach the resolver.
+	const LOGIN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+	(async () => {
+		try {
+			const loginPromise = authStorage.login(providerId, {
+				onAuth: async (info) => {
+					let msg = `*Open this URL in your browser:*\n\n${info.url}\n\n`;
+					if (info.instructions) {
+						msg += `${info.instructions}\n\n`;
 					}
-				}
-			} catch (persistErr) {
-				const msg = persistErr instanceof Error ? persistErr.message : String(persistErr);
-				log.logWarning(`[/login] Credential persistence failed: ${msg}`);
-				await platform.postMessage(
-					channelId,
-					`⚠ Logged in but failed to persist credentials. They may be lost on container restart.`,
-				);
-			}
-		} else {
-			log.logInfo(`[/login] No FAT_TOOLS_TOKEN — skipping platform persistence`);
-		}
+					msg += `After authorizing, your browser will redirect to a \`localhost\` URL that won't load — that's expected. Copy the *full URL* from your browser's address bar and paste it here.`;
+					await platform.postMessage(channelId, msg);
+				},
+				onPrompt: async (prompt) => {
+					await platform.postMessage(channelId, prompt.message);
+					const input = await waitForInput(channelId);
+					return input;
+				},
+				onManualCodeInput: async () => {
+					const input = await waitForInput(channelId);
+					return input;
+				},
+				onProgress: async (message) => {
+					await platform.postMessage(channelId, `_${message}_`);
+				},
+			});
 
-		logSystemAction(workingDir, "system", `/login ${providerId} — success`);
-		await platform.postMessage(channelId, `✓ Logged in to *${provider.name}*`);
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		log.logWarning(`[/login] Login failed for ${providerId}: ${msg}`);
-		await platform.postMessage(channelId, `_Login failed: ${msg}_`);
-	}
+			const timeoutPromise = new Promise<never>((_, reject) =>
+				setTimeout(() => reject(new Error("Login timed out (5 min). Try /login again.")), LOGIN_TIMEOUT_MS),
+			);
+
+			await Promise.race([loginPromise, timeoutPromise]);
+
+			// Login succeeded — auth.json is written by AuthStorage.
+			// Now persist to platform secrets so it survives container restart.
+			// Maps provider IDs to platform secret keys (must match crawdad-cf hydrate.ts FILE_RULES).
+			const secretKeyMap: Record<string, string> = {
+				"openai-codex": "codex_credentials",
+			};
+			const secretKey = secretKeyMap[providerId];
+			const toolsToken = process.env.FAT_TOOLS_TOKEN;
+			if (toolsToken && secretKey) {
+				try {
+					const authPath = join(homedir(), ".pi", "agent", "auth.json");
+					const authData = JSON.parse(readFileSync(authPath, "utf-8"));
+					const creds = authData[providerId];
+					if (creds) {
+						// Strip the "type" field — platform stores raw OAuth creds
+						const { type: _, ...rawCreds } = creds;
+						const resp = await fetch("https://tinyfat.com/api/agent/secrets", {
+							method: "PATCH",
+							headers: {
+								"Authorization": `Bearer ${toolsToken}`,
+								"Content-Type": "application/json",
+							},
+							body: JSON.stringify({ [secretKey]: JSON.stringify(rawCreds) }),
+						});
+						if (resp.ok) {
+							log.logInfo(`[/login] Credentials for ${providerId} persisted to platform`);
+						} else {
+							log.logWarning(`[/login] Failed to persist credentials: ${resp.status}`);
+							await platform.postMessage(
+								channelId,
+								`⚠ Logged in but failed to persist credentials (${resp.status}). They may be lost on container restart.`,
+							);
+						}
+					}
+				} catch (persistErr) {
+					const msg = persistErr instanceof Error ? persistErr.message : String(persistErr);
+					log.logWarning(`[/login] Credential persistence failed: ${msg}`);
+					await platform.postMessage(
+						channelId,
+						`⚠ Logged in but failed to persist credentials. They may be lost on container restart.`,
+					);
+				}
+			} else {
+				log.logInfo(`[/login] No FAT_TOOLS_TOKEN — skipping platform persistence`);
+			}
+
+			logSystemAction(workingDir, "system", `/login ${providerId} — success`);
+			await platform.postMessage(channelId, `✓ Logged in to *${provider.name}*`);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			log.logWarning(`[/login] Login failed for ${providerId}: ${msg}`);
+			pendingInput.delete(channelId); // Clean up any dangling resolver
+			await platform.postMessage(channelId, `_Login failed: ${msg}_`);
+		}
+	})();
 }

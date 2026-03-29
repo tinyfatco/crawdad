@@ -145,6 +145,12 @@ When mentioning users, use @username format.`;
 			isBot: false,
 		});
 
+		// Resolve pending input first (e.g. /login waiting for pasted URL).
+		// Must bypass the queue entirely — the queue may be blocked waiting on this.
+		if (this.handler.resolvePendingInput(chatId, text)) {
+			return;
+		}
+
 		// Check for stop
 		if (text.toLowerCase().trim() === "stop") {
 			if (this.handler.isRunning(chatId)) {

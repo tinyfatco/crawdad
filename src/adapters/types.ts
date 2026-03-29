@@ -89,6 +89,13 @@ export interface MomHandler {
 	 * Called when user says "stop" while mom is running
 	 */
 	handleStop(channelId: string, adapter: PlatformAdapter): Promise<void>;
+
+	/**
+	 * Check if a channel has pending input (e.g. /login waiting for pasted URL).
+	 * If so, resolve it with the given text and return true.
+	 * Callers should bypass the queue and return immediately.
+	 */
+	resolvePendingInput(channelId: string, text: string): boolean;
 }
 
 /**

@@ -532,12 +532,11 @@ const handler: MomHandler = {
 		}
 	},
 
-	async handleEvent(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<void> {
-		// Check for pending input (e.g. /login waiting for pasted URL)
-		if (!isEvent && resolvePendingInput(event.channel, event.text)) {
-			return;
-		}
+	resolvePendingInput(channelId: string, text: string): boolean {
+		return resolvePendingInput(channelId, text);
+	},
 
+	async handleEvent(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<void> {
 		// Ensure awareness is initialized (needed for /context and other commands)
 		const state = getAwareness(event.channel, platform, platform.formatInstructions);
 

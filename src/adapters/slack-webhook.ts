@@ -155,6 +155,10 @@ export class SlackWebhookAdapter extends SlackBase {
 
 		momEvent.attachments = this.logUserMessage(momEvent);
 
+		if (this.handler.resolvePendingInput(event.channel, momEvent.text)) {
+			return;
+		}
+
 		if (momEvent.text.toLowerCase().trim() === "stop") {
 			if (this.handler.isRunning(event.channel)) {
 				this.handler.handleStop(event.channel, this);
@@ -194,6 +198,10 @@ export class SlackWebhookAdapter extends SlackBase {
 		momEvent.attachments = this.logUserMessage(momEvent);
 
 		if (isDM) {
+			if (this.handler.resolvePendingInput(event.channel, momEvent.text)) {
+				return;
+			}
+
 			if (momEvent.text.toLowerCase().trim() === "stop") {
 				if (this.handler.isRunning(event.channel)) {
 					this.handler.handleStop(event.channel, this);
