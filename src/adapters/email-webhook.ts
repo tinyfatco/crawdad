@@ -368,6 +368,7 @@ Keep responses concise and professional. The user will receive one email with yo
 		const payload = this.pendingPayloads.get(event.channel);
 		const emailMeta = {
 			from: event.user,
+			selfEmail: payload?.to?.toLowerCase(), // agent's own address — exclude from reply-all
 			subject: payload?.subject || "(no subject)",
 			messageId: payload?.messageId,
 			inReplyTo: payload?.inReplyTo,
@@ -463,7 +464,7 @@ Keep responses concise and professional. The user will receive one email with yo
 	// ==========================================================================
 
 	private async sendEmailReply(
-		meta: { from: string; subject: string; messageId?: string; inReplyTo?: string; references?: string; allRecipients?: string[] },
+		meta: { from: string; selfEmail?: string; subject: string; messageId?: string; inReplyTo?: string; references?: string; allRecipients?: string[] },
 		finalText: string,
 		toolLog: string[],
 		attachments: Array<{ filename: string; filePath: string }> = [],
@@ -479,11 +480,14 @@ Keep responses concise and professional. The user will receive one email with yo
 		const replySubject = meta.subject.startsWith("Re:") ? meta.subject : `Re: ${meta.subject}`;
 
 		// Reply-all: combine sender + all other recipients, deduped
+		// Filter out the agent's own address to avoid CC'ing itself
 		const allTo = new Set<string>();
 		allTo.add(meta.from.toLowerCase());
 		if (meta.allRecipients) {
 			for (const addr of meta.allRecipients) {
-				allTo.add(addr.toLowerCase());
+				const lower = addr.toLowerCase();
+				if (meta.selfEmail && lower === meta.selfEmail) continue;
+				allTo.add(lower);
 			}
 		}
 		const toList = Array.from(allTo).join(", ");
