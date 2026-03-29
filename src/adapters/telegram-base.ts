@@ -63,6 +63,9 @@ When mentioning users, use @username format.`;
 	// Shared incoming message handler
 	// ==========================================================================
 
+	/** Promise that resolves when the last enqueued run completes. Used by hold-connection mode. */
+	public lastRunDone: Promise<void> = Promise.resolve();
+
 	protected handleIncomingMessage(msg: TelegramBot.Message): void {
 		const hasMedia = !!(msg.voice || msg.audio || msg.document || msg.photo || msg.video || msg.video_note);
 		if ((!msg.text && !msg.caption && !hasMedia) || msg.from?.is_bot) return;
@@ -165,7 +168,7 @@ When mentioning users, use @username format.`;
 		if (this.handler.isRunning(chatId)) {
 			this.handler.handleSteer(momEvent, this);
 		} else {
-			this.enqueueWork(chatId, () => this.handler.handleEvent(momEvent, this));
+			this.lastRunDone = this.enqueueWork(chatId, () => this.handler.handleEvent(momEvent, this));
 		}
 	}
 
@@ -376,24 +379,31 @@ When mentioning users, use @username format.`;
 	// Private - Queue
 	// ==========================================================================
 
-	private enqueueWork(channelId: string, work: QueuedWork): void {
+	private enqueueWork(channelId: string, work: QueuedWork): Promise<void> {
 		let queue = this.queues.get(channelId);
 		if (!queue) {
 			queue = [];
 			this.queues.set(channelId, queue);
 		}
 		const enqueuedAt = Date.now();
+		let resolve: () => void;
+		const done = new Promise<void>((r) => { resolve = r; });
 		queue.push(async () => {
 			const waitMs = Date.now() - enqueuedAt;
 			if (waitMs > 500) {
 				log.logInfo(`[queue] ${channelId} work waited ${waitMs}ms in queue (depth was ${queue!.length})`);
 			}
-			return work();
+			try {
+				return await work();
+			} finally {
+				resolve!();
+			}
 		});
 		if (this.processing.get(channelId)) {
 			log.logInfo(`[queue] ${channelId} enqueued (queue depth=${queue.length}, processing=true)`);
 		}
 		this.processQueue(channelId);
+		return done;
 	}
 
 	private async processQueue(channelId: string): Promise<void> {

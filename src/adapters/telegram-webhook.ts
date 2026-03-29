@@ -68,7 +68,7 @@ export class TelegramWebhookAdapter extends TelegramBase {
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
 		const chunks: Buffer[] = [];
 		req.on("data", (chunk: Buffer) => chunks.push(chunk));
-		req.on("end", () => {
+		req.on("end", async () => {
 			const body = Buffer.concat(chunks).toString("utf-8");
 
 			// Verify secret token header
@@ -89,13 +89,25 @@ export class TelegramWebhookAdapter extends TelegramBase {
 				return;
 			}
 
-			// Acknowledge immediately (Telegram retries on non-2xx)
-			res.writeHead(200);
-			res.end();
+			const holdConnection = !!process.env.MOM_HOLD_WEBHOOK_CONNECTION;
 
-			log.logInfo(`[telegram:webhook] dispatch: processing update at ${new Date().toISOString()}`);
+			if (!holdConnection) {
+				// Fire-and-forget (crawdad-cf mode)
+				res.writeHead(200);
+				res.end();
+			}
+
+			log.logInfo(`[telegram:webhook] dispatch: processing update at ${new Date().toISOString()} (hold=${holdConnection})`);
 			// Process the update — fires bot.on("message") which calls handleIncomingMessage
 			this.bot.processUpdate(update as Parameters<typeof this.bot.processUpdate>[0]);
+
+			if (holdConnection) {
+				// Wait for the run to complete before responding (Sprites mode)
+				await this.lastRunDone;
+				res.writeHead(200);
+				res.end();
+				log.logInfo(`[telegram:webhook] held connection released`);
+			}
 		});
 	}
 }

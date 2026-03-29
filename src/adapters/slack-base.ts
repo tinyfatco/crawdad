@@ -30,12 +30,15 @@ export interface SlackChannel {
 type QueuedWork = () => Promise<void>;
 
 export class ChannelQueue {
-	private queue: QueuedWork[] = [];
+	private queue: Array<{ work: QueuedWork; resolve: () => void }> = [];
 	private processing = false;
 
-	enqueue(work: QueuedWork): void {
-		this.queue.push(work);
+	enqueue(work: QueuedWork): Promise<void> {
+		let resolve: () => void;
+		const done = new Promise<void>((r) => { resolve = r; });
+		this.queue.push({ work, resolve: resolve! });
 		this.processNext();
+		return done;
 	}
 
 	size(): number {
@@ -45,12 +48,13 @@ export class ChannelQueue {
 	private async processNext(): Promise<void> {
 		if (this.processing || this.queue.length === 0) return;
 		this.processing = true;
-		const work = this.queue.shift()!;
+		const { work, resolve } = this.queue.shift()!;
 		try {
 			await work();
 		} catch (err) {
 			log.logWarning("Queue error", err instanceof Error ? err.message : String(err));
 		}
+		resolve();
 		this.processing = false;
 		this.processNext();
 	}

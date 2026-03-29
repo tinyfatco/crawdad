@@ -103,7 +103,10 @@ export class SlackWebhookAdapter extends SlackBase {
 	// Event dispatch
 	// ==========================================================================
 
-	private dispatchEvent(payload: SlackEventPayload, res: ServerResponse): void {
+	/** Promise that resolves when the last enqueued run completes. Used by hold-connection mode. */
+	public lastRunDone: Promise<void> = Promise.resolve();
+
+	private async dispatchEvent(payload: SlackEventPayload, res: ServerResponse): Promise<void> {
 		// URL verification challenge
 		if (payload.type === "url_verification") {
 			res.writeHead(200, { "Content-Type": "application/json" });
@@ -112,11 +115,16 @@ export class SlackWebhookAdapter extends SlackBase {
 			return;
 		}
 
-		// Acknowledge immediately (Slack requires response within 3 seconds)
-		res.writeHead(200);
-		res.end();
+		const holdConnection = !!process.env.MOM_HOLD_WEBHOOK_CONNECTION;
+
+		if (!holdConnection) {
+			// Fire-and-forget (crawdad-cf mode)
+			res.writeHead(200);
+			res.end();
+		}
 
 		if (payload.type !== "event_callback" || !payload.event) {
+			if (holdConnection) { res.writeHead(200); res.end(); }
 			return;
 		}
 
@@ -128,16 +136,31 @@ export class SlackWebhookAdapter extends SlackBase {
 		}
 
 		// Ignore own messages only — bots are just participants
-		if (event.user === this.botUserId) return;
+		if (event.user === this.botUserId) {
+			if (holdConnection) { res.writeHead(200); res.end(); }
+			return;
+		}
 		// Ignore subtypes other than file_share and bot_message
-		if (event.subtype !== undefined && event.subtype !== "file_share" && event.subtype !== "bot_message") return;
+		if (event.subtype !== undefined && event.subtype !== "file_share" && event.subtype !== "bot_message") {
+			if (holdConnection) { res.writeHead(200); res.end(); }
+			return;
+		}
 		// Need at least a user or bot_id to attribute the message
-		if (!event.user && !event.bot_id) return;
+		if (!event.user && !event.bot_id) {
+			if (holdConnection) { res.writeHead(200); res.end(); }
+			return;
+		}
 
 		if (event.type === "app_mention") {
 			this.handleAppMention(event);
 		} else if (event.type === "message") {
 			this.handleMessage(event);
+		}
+
+		if (holdConnection) {
+			await this.lastRunDone;
+			res.writeHead(200);
+			res.end();
 		}
 	}
 
@@ -171,7 +194,7 @@ export class SlackWebhookAdapter extends SlackBase {
 		if (this.handler.isRunning(event.channel)) {
 			this.handler.handleSteer(momEvent, this);
 		} else {
-			this.getQueue(event.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
+			this.lastRunDone = this.getQueue(event.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
 		}
 	}
 
@@ -214,7 +237,7 @@ export class SlackWebhookAdapter extends SlackBase {
 			if (this.handler.isRunning(event.channel)) {
 				this.handler.handleSteer(momEvent, this);
 			} else {
-				this.getQueue(event.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
+				this.lastRunDone = this.getQueue(event.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
 			}
 		} else {
 			// Ambient engagement: non-DM, non-mention message — let the engagement system decide

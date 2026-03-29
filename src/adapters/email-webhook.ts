@@ -80,7 +80,7 @@ Keep responses concise and professional. The user will receive one email with yo
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
 		const chunks: Buffer[] = [];
 		req.on("data", (chunk: Buffer) => chunks.push(chunk));
-		req.on("end", () => {
+		req.on("end", async () => {
 			const body = Buffer.concat(chunks).toString("utf-8");
 
 			let payload: EmailPayload;
@@ -98,14 +98,25 @@ Keep responses concise and professional. The user will receive one email with yo
 				return;
 			}
 
-			// Acknowledge immediately — email processing can take a while
-			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ ok: true }));
+			const holdConnection = !!process.env.MOM_HOLD_WEBHOOK_CONNECTION;
 
-			// Process email asynchronously
-			this.processEmail(payload).catch((err) => {
+			if (!holdConnection) {
+				// Fire-and-forget (crawdad-cf mode)
+				res.writeHead(200, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ ok: true }));
+			}
+
+			// Process email
+			try {
+				await this.processEmail(payload);
+			} catch (err) {
 				log.logWarning("Email processing error", err instanceof Error ? err.message : String(err));
-			});
+			}
+
+			if (holdConnection) {
+				res.writeHead(200, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ ok: true }));
+			}
 		});
 	}
 
