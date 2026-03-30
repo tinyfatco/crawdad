@@ -691,6 +691,7 @@ gateway.registerGet("/schedule", async (_req, res) => {
 
 // Ambient evaluate endpoint — Sprout DO pokes this to trigger deferred ambient engagement.
 // The Sprite wakes, reads the pulse snapshot from disk, runs the LLM evaluation.
+// Marked ready immediately — doesn't depend on adapter init.
 gateway.register("/ambient/evaluate", async (req, res) => {
 	const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 	const channelId = url.searchParams.get("channel");
@@ -733,6 +734,7 @@ gateway.register("/ambient/evaluate", async (req, res) => {
 gateway.registerUpgrade("/terminal", handleTerminalUpgrade(workingDir));
 
 await gateway.start(parsedArgs.port);
+gateway.markReady("/ambient/evaluate");
 log.logInfo(`[perf] gateway listening: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
 // Start voice WebSocket server early (port 8765) so it's ready before adapters init.
