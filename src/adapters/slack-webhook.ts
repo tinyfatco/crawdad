@@ -11,14 +11,18 @@ import type { MomEvent } from "./types.js";
 
 export interface SlackWebhookAdapterConfig extends SlackBaseConfig {
 	signingSecret: string;
+	/** Optional: returns and clears a pending ambient defer signal (Sprites mode). */
+	consumeAmbientDefer?: () => { channelId: string; delaySec: number } | null;
 }
 
 export class SlackWebhookAdapter extends SlackBase {
 	private signingSecret: string;
+	consumeAmbientDefer?: () => { channelId: string; delaySec: number } | null;
 
 	constructor(config: SlackWebhookAdapterConfig) {
 		super(config);
 		this.signingSecret = config.signingSecret;
+		this.consumeAmbientDefer = config.consumeAmbientDefer;
 	}
 
 	async start(): Promise<void> {
@@ -159,7 +163,13 @@ export class SlackWebhookAdapter extends SlackBase {
 
 		if (holdConnection) {
 			await this.lastRunDone;
-			res.writeHead(200);
+			// Check for deferred ambient signal (Sprites mode)
+			const ambientDefer = this.consumeAmbientDefer?.();
+			if (ambientDefer) {
+				res.writeHead(200, { "X-Ambient-Defer": `${ambientDefer.channelId}:${ambientDefer.delaySec}` });
+			} else {
+				res.writeHead(200);
+			}
 			res.end();
 		}
 	}

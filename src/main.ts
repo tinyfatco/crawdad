@@ -244,6 +244,21 @@ const pulse = new ChannelPulse("pending");
 const AMBIENT_COOLDOWN_MS = 45_000; // 45 seconds
 const ambientTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const ambientLastFired = new Map<string, number>();
+const AMBIENT_PENDING_DIR = join(workingDir, "ambient-pending");
+const isSpritesMode = !!process.env.MOM_HOLD_WEBHOOK_CONNECTION;
+
+/**
+ * Deferred ambient signal — set by handleAmbientMessage in Sprites mode,
+ * read by the Slack webhook adapter to add the X-Ambient-Defer header.
+ */
+let pendingAmbientDefer: { channelId: string; delaySec: number } | null = null;
+
+/** Read and clear the pending ambient defer signal. */
+function consumeAmbientDefer(): { channelId: string; delaySec: number } | null {
+	const val = pendingAmbientDefer;
+	pendingAmbientDefer = null;
+	return val;
+}
 
 /** Schedule (or re-schedule) an ambient evaluation for a channel. */
 function handleAmbientMessage(channelId: string, _event: MomEvent): void {
@@ -266,53 +281,78 @@ function handleAmbientMessage(channelId: string, _event: MomEvent): void {
 	const pulseSummary = pulse.summary(channelId);
 	log.logInfo(`[ambient:${channelId}] Scheduling engagement in ${(delayMs / 1000).toFixed(0)}s (temp=${pulseSummary.temperature}, sinceMyLast=${Math.round(pulseSummary.timeSinceMyLastMs / 1000)}s, participants=${pulseSummary.recentParticipants})`);
 
+	// Sprites mode: save pulse to disk, signal deferred poke via DO alarm.
+	// In-memory timers die when the Sprite sleeps at 30s idle.
+	if (isSpritesMode) {
+		pulse.saveSnapshot(channelId, AMBIENT_PENDING_DIR);
+		pendingAmbientDefer = { channelId, delaySec: Math.ceil(delayMs / 1000) };
+		log.logInfo(`[ambient:${channelId}] Sprites mode: saved pulse snapshot, deferring ${Math.ceil(delayMs / 1000)}s via DO alarm`);
+		return;
+	}
+
+	// crawdad-cf / host mode: use in-memory timer (container stays alive)
 	const timerId = setTimeout(() => {
 		ambientTimers.delete(channelId);
 		ambientLastFired.set(channelId, Date.now());
-
-		// Check if agent is currently running — if so, re-defer
-		if (awareness?.running) {
-			log.logInfo(`[ambient:${channelId}] Agent busy, re-deferring`);
-			// Re-schedule for 10s later
-			handleAmbientMessage(channelId, _event);
-			return;
-		}
-
-		// Get recent messages from the pulse
-		const recentMessages = pulse.recentMessages(channelId);
-		if (recentMessages.length === 0) return;
-
-		const refreshedSummary = pulse.summary(channelId);
-
-		// Find the Slack adapter that owns this channel
-		const slackAdapter = adapters.find((a) => a.name === "slack" && a.getChannel(channelId));
-		if (!slackAdapter) return;
-
-		// Format recent messages — resolve Slack user IDs to display names
-		const messageLines = recentMessages.map((m) => {
-			const user = slackAdapter.getUser(m.participantId);
-			const who = user ? `${user.displayName} (${m.participantId})` : m.participantId;
-			return `${who}: ${m.text}`;
-		}).join("\n");
-
-		const ambientEvent: MomEvent = {
-			type: "mention",
-			channel: channelId,
-			ts: String(Date.now() / 1000),
-			user: "system",
-			text: `[AMBIENT] A conversation is happening in this channel. Recent messages:\n\n${messageLines}\n\nChannel pulse: ${refreshedSummary.temperature} messages in last 15min, ${refreshedSummary.recentParticipants} participants, you last spoke ${refreshedSummary.timeSinceMyLastMs === Infinity ? "never" : Math.round(refreshedSummary.timeSinceMyLastMs / 1000) + "s ago"}.\n\nYou're observing this conversation naturally. If you have something genuinely useful, interesting, or fun to add — respond naturally as a participant. Keep it brief and conversational. If you have nothing to add, use the yield_no_action tool.`,
-		};
-
-		const queue = (slackAdapter as any).getQueue?.(channelId);
-		if (queue) {
-			queue.enqueue(async () => {
-				if (awareness?.running) return;
-				await handler.handleEvent(ambientEvent, slackAdapter);
-			});
-		}
+		fireAmbientEvaluation(channelId);
 	}, delayMs);
 
 	ambientTimers.set(channelId, timerId);
+}
+
+/** Run the ambient engagement evaluation for a channel. Used by both timer and /ambient/evaluate.
+ *  Returns a promise that resolves when the run completes (for hold-connection). */
+function fireAmbientEvaluation(channelId: string, snapshotEntries?: import("./engagement/channel-pulse.js").PulseEntry[]): Promise<void> | void {
+	// Check if agent is currently running — if so, re-defer
+	if (awareness?.running) {
+		log.logInfo(`[ambient:${channelId}] Agent busy, re-deferring`);
+		if (!isSpritesMode) {
+			// In-memory re-defer (crawdad-cf mode)
+			const timerId = setTimeout(() => {
+				ambientTimers.delete(channelId);
+				fireAmbientEvaluation(channelId);
+			}, 10_000);
+			ambientTimers.set(channelId, timerId);
+		}
+		return;
+	}
+
+	// Get recent messages — from snapshot (Sprites) or live pulse (crawdad-cf)
+	const recentMessages = snapshotEntries
+		? snapshotEntries.filter(e => e.text).slice(-15)
+		: pulse.recentMessages(channelId);
+	if (recentMessages.length === 0) return;
+
+	const refreshedSummary = snapshotEntries
+		? { temperature: snapshotEntries.length, recentParticipants: new Set(snapshotEntries.map(e => e.participantId)).size, timeSinceMyLastMs: Infinity }
+		: pulse.summary(channelId);
+
+	// Find the Slack adapter that owns this channel
+	const slackAdapter = adapters.find((a) => a.name === "slack" && a.getChannel(channelId));
+	if (!slackAdapter) return;
+
+	// Format recent messages — resolve Slack user IDs to display names
+	const messageLines = recentMessages.map((m) => {
+		const user = slackAdapter.getUser(m.participantId);
+		const who = user ? `${user.displayName} (${m.participantId})` : m.participantId;
+		return `${who}: ${m.text}`;
+	}).join("\n");
+
+	const ambientEvent: MomEvent = {
+		type: "mention",
+		channel: channelId,
+		ts: String(Date.now() / 1000),
+		user: "system",
+		text: `[AMBIENT] A conversation is happening in this channel. Recent messages:\n\n${messageLines}\n\nChannel pulse: ${refreshedSummary.temperature} messages in last 15min, ${refreshedSummary.recentParticipants} participants, you last spoke ${refreshedSummary.timeSinceMyLastMs === Infinity ? "never" : Math.round(refreshedSummary.timeSinceMyLastMs / 1000) + "s ago"}.\n\nYou're observing this conversation naturally. If you have something genuinely useful, interesting, or fun to add — respond naturally as a participant. Keep it brief and conversational. If you have nothing to add, use the yield_no_action tool.`,
+	};
+
+	const queue = (slackAdapter as any).getQueue?.(channelId);
+	if (queue) {
+		return queue.enqueue(async () => {
+			if (awareness?.running) return;
+			await handler.handleEvent(ambientEvent, slackAdapter);
+		});
+	}
 }
 
 function createAdapter(name: string): AdapterWithHandler {
@@ -336,7 +376,7 @@ function createAdapter(name: string): AdapterWithHandler {
 				process.exit(1);
 			}
 			const store = new ChannelStore({ workingDir, botToken });
-			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, pulse, onAmbientMessage: handleAmbientMessage });
+			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, pulse, onAmbientMessage: handleAmbientMessage, consumeAmbientDefer });
 		}
 		case "telegram":
 		case "telegram:polling": {
@@ -647,6 +687,44 @@ gateway.registerGet("/schedule", async (_req, res) => {
 		res.writeHead(500);
 		res.end(JSON.stringify({ error: String(err) }));
 	}
+});
+
+// Ambient evaluate endpoint — Sprout DO pokes this to trigger deferred ambient engagement.
+// The Sprite wakes, reads the pulse snapshot from disk, runs the LLM evaluation.
+gateway.register("/ambient/evaluate", async (req, res) => {
+	const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+	const channelId = url.searchParams.get("channel");
+
+	if (!channelId) {
+		res.writeHead(400);
+		res.end("Missing channel param");
+		return;
+	}
+
+	log.logInfo(`[ambient:${channelId}] Received evaluate poke from orchestrator`);
+
+	// Load pulse snapshot from disk
+	const snapshot = ChannelPulse.loadSnapshot(channelId, AMBIENT_PENDING_DIR);
+	if (!snapshot) {
+		log.logInfo(`[ambient:${channelId}] No snapshot found, skipping`);
+		res.writeHead(200);
+		res.end("no snapshot");
+		return;
+	}
+
+	// Delete snapshot before evaluation (prevent re-fire on re-poke)
+	ChannelPulse.deleteSnapshot(channelId, AMBIENT_PENDING_DIR);
+
+	// Update cooldown tracking
+	ambientLastFired.set(channelId, Date.now());
+
+	// Fire the evaluation — this enqueues a run on the Slack adapter's channel queue.
+	// Await the returned promise to hold the connection (keeps Sprite awake during the run).
+	const runDone = fireAmbientEvaluation(channelId, snapshot.entries);
+	if (runDone) await runDone;
+
+	res.writeHead(200);
+	res.end("ok");
 });
 
 // Register native terminal PTY — provides /terminal WebSocket in standalone mode.

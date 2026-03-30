@@ -7,12 +7,22 @@
  * it needs to decide when to invoke the LLM for a "should I speak?" check.
  */
 
+import { writeFileSync, readFileSync, mkdirSync, unlinkSync, existsSync } from "fs";
+import { join } from "path";
+
 export interface PulseEntry {
 	ts: number; // Date.now() millis
 	participantId: string;
 	textLength: number;
 	/** Full message text, for ambient context. Never truncated. */
 	text?: string;
+}
+
+export interface PulseSnapshot {
+	channelId: string;
+	selfId: string;
+	entries: PulseEntry[];
+	savedAt: number;
 }
 
 const BUFFER_SIZE = 50;
@@ -101,6 +111,35 @@ export class ChannelPulse {
 		const buf = this.buffers.get(channelId);
 		if (!buf) return [];
 		return buf.slice(-n);
+	}
+
+	/** Save a pulse snapshot to disk for deferred ambient evaluation (Sprites mode). */
+	saveSnapshot(channelId: string, dir: string): void {
+		mkdirSync(dir, { recursive: true });
+		const snapshot: PulseSnapshot = {
+			channelId,
+			selfId: this.selfId,
+			entries: this.buffers.get(channelId) || [],
+			savedAt: Date.now(),
+		};
+		writeFileSync(join(dir, `${channelId}.json`), JSON.stringify(snapshot));
+	}
+
+	/** Load a pulse snapshot from disk. Returns null if not found. */
+	static loadSnapshot(channelId: string, dir: string): PulseSnapshot | null {
+		const path = join(dir, `${channelId}.json`);
+		if (!existsSync(path)) return null;
+		try {
+			return JSON.parse(readFileSync(path, "utf-8"));
+		} catch {
+			return null;
+		}
+	}
+
+	/** Delete a pulse snapshot from disk. */
+	static deleteSnapshot(channelId: string, dir: string): void {
+		const path = join(dir, `${channelId}.json`);
+		try { unlinkSync(path); } catch { /* ok if missing */ }
 	}
 
 	/** Quick summary for logging / LLM context. */
