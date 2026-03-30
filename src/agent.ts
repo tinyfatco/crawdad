@@ -70,6 +70,8 @@ export interface AgentRunner {
 	compact(instructions?: string): Promise<CompactResult>;
 	/** Clear context entirely — archive and start fresh */
 	clear(): Promise<{ messagesCleared: number }>;
+	/** Called on every substantive event (tool call, LLM token, etc.) during a run */
+	onActivity?: () => void;
 }
 
 
@@ -454,9 +456,15 @@ function createRunner(
 		systemPromptSet: false,
 	};
 
+	// Activity callback for external watchdog
+	let onActivity: (() => void) | undefined;
+
 	// Event handler
 	const eventHandler = async (event: any) => {
 		if (!runState.ctx || !runState.logCtx || !runState.queue) return;
+
+		// Signal activity on any substantive event
+		onActivity?.();
 
 		const { ctx, logCtx, queue, pendingTools } = runState;
 
@@ -986,6 +994,9 @@ function createRunner(
 				tokensBefore: result.tokensBefore,
 			};
 		},
+
+		get onActivity(): (() => void) | undefined { return onActivity; },
+		set onActivity(fn: (() => void) | undefined) { onActivity = fn; },
 
 		async clear(): Promise<{ messagesCleared: number }> {
 			const contextFile = join(awarenessDir, "context.jsonl");

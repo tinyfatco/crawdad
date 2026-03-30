@@ -419,6 +419,8 @@ const AWARENESS_DIR = "awareness";
 
 interface Awareness {
 	running: boolean;
+	/** Timestamp of last substantive activity during a run (LLM token, tool call, etc.) */
+	lastActivity: number;
 	runner: AgentRunner;
 	store: ChannelStore;
 	stopRequested: boolean;
@@ -453,19 +455,27 @@ function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstruc
 			}),
 		];
 
+		const runner = getOrCreateRunner(
+			sandbox,
+			awarenessDir,
+			formatInstructions,
+			parsedArgs.skillsDirs,
+			extraTools,
+		);
+
 		awareness = {
 			running: false,
-			runner: getOrCreateRunner(
-				sandbox,
-				awarenessDir,
-				formatInstructions,
-				parsedArgs.skillsDirs,
-				extraTools,
-			),
+			lastActivity: 0,
+			runner,
 			store: new ChannelStore({ workingDir, botToken: process.env.MOM_SLACK_BOT_TOKEN || "" }),
 			stopRequested: false,
 			displayChannelId: channelId,
 			displayAdapter: adapter,
+		};
+
+		// Wire activity callback for stuck-run watchdog
+		runner.onActivity = () => {
+			if (awareness) awareness.lastActivity = Date.now();
 		};
 	}
 	// Update display channel to wherever the latest message came from
@@ -549,6 +559,7 @@ const handler: MomHandler = {
 
 		// Start run
 		state.running = true;
+		state.lastActivity = Date.now();
 		state.stopRequested = false;
 
 		const channelLabel = getChannelLabel(event.channel, adapters);
@@ -737,6 +748,19 @@ await Promise.all(adapters.map(async (adapter, i) => {
 	}
 }));
 log.logInfo(`[perf] all adapters started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
+
+// Stuck-run watchdog — detect runs with no activity for 5 minutes and force-release
+const WATCHDOG_INTERVAL_MS = 60_000;
+const WATCHDOG_STALE_THRESHOLD_MS = 5 * 60 * 1000;
+setInterval(() => {
+	if (!awareness?.running) return;
+	const staleness = Date.now() - awareness.lastActivity;
+	if (staleness > WATCHDOG_STALE_THRESHOLD_MS) {
+		log.logWarning(`[watchdog] Stale run detected (no activity for ${Math.round(staleness / 1000)}s), aborting`);
+		try { awareness.runner.abort(); } catch { /* best-effort */ }
+		awareness.running = false;
+	}
+}, WATCHDOG_INTERVAL_MS);
 
 // Seed HEARTBEAT.md and settings.json if they don't exist (first boot for new agents)
 {
