@@ -833,7 +833,9 @@ function createRunner(
 			// Handle error case
 			if (runState.stopReason === "error" && runState.errorMessage) {
 				try {
-					await ctx.sendFinalResponse("_Sorry, something went wrong_");
+					const userErrorMsg = `_Sorry, something went wrong: ${runState.errorMessage}_`;
+					ctx.emitContentBlock?.({ type: "error", message: runState.errorMessage });
+					await ctx.sendFinalResponse(userErrorMsg);
 					await ctx.respondInThread(`_Error: ${runState.errorMessage}_`);
 				} catch (err) {
 					const errMsg = err instanceof Error ? err.message : String(err);
