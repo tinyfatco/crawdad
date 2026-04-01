@@ -215,8 +215,8 @@ export function WorkspaceLayout() {
         {/* Right: Awareness Stream */}
         {!awarenessCollapsed && (
           <>
-            <div className="resize-handle" onMouseDown={handleAwarenessDragStart} />
-            <div className="awareness-sidebar" style={{ width: awarenessWidth }}>
+            {!centerCollapsed && <div className="resize-handle" onMouseDown={handleAwarenessDragStart} />}
+            <div className="awareness-sidebar" style={centerCollapsed ? { flex: 1 } : { width: awarenessWidth }}>
               <AwarenessPane />
             </div>
           </>
