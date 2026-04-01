@@ -11,6 +11,7 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 import type { PlatformAdapter } from "./adapters/types.js";
 import type { AgentRunner } from "./agent.js";
+import { MomSettingsManager } from "./context.js";
 import { findModel, listModels, resolveModel } from "./model-config.js";
 import * as log from "./log.js";
 import { formatUsageSummary, formatTokens } from "./log.js";
@@ -201,36 +202,62 @@ async function handleVerboseCommand(
 	workingDir: string,
 	platform: PlatformAdapter,
 ): Promise<void> {
-	const settingsPath = join(workingDir, "settings.json");
-	let settings: Record<string, unknown> = {};
-	if (existsSync(settingsPath)) {
-		try {
-			settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-		} catch { /* start fresh */ }
-	}
+	const mgr = new MomSettingsManager(workingDir);
+	const platformName = platform.name;
+	const arg0 = args[0]?.toLowerCase();
+	const arg1 = args[1]?.toLowerCase();
 
-	const arg = args[0]?.toLowerCase();
-
-	if (!arg) {
-		// Toggle
-		const current = settings.verbose !== false;
-		settings.verbose = !current;
-	} else if (arg === "on" || arg === "true") {
-		settings.verbose = true;
-	} else if (arg === "off" || arg === "false") {
-		settings.verbose = false;
-	} else {
-		await platform.postMessage(channelId, `Usage: \`/verbose\` (toggle), \`/verbose on\`, \`/verbose off\``);
+	// /verbose global on|off — set the global default
+	if (arg0 === "global") {
+		if (arg1 === "on" || arg1 === "true") {
+			mgr.setVerboseDefault(true);
+		} else if (arg1 === "off" || arg1 === "false") {
+			mgr.setVerboseDefault(false);
+		} else {
+			await platform.postMessage(channelId, `Usage: \`/verbose global on\`, \`/verbose global off\``);
+			return;
+		}
+		const label = mgr.getVerboseDefault() ? "on" : "off";
+		log.logInfo(`Verbose global default ${label} via /verbose command`);
+		await platform.postMessage(channelId, `Global verbose default *${label}*`);
 		return;
 	}
 
-	writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+	// /verbose clear — remove channel override
+	if (arg0 === "clear") {
+		mgr.setChannelVerbose(channelId, platformName, null);
+		const effective = mgr.getVerbose(channelId, platformName);
+		log.logInfo(`Verbose override cleared for ${platformName}/${channelId}`);
+		await platform.postMessage(
+			channelId,
+			`Verbose override cleared for this channel\n_(using global default: ${effective ? "on" : "off"})_`,
+		);
+		return;
+	}
 
-	const label = settings.verbose ? "on" : "off";
-	log.logInfo(`Verbose ${label} via /verbose command`);
+	// /verbose on|off — set channel override
+	// /verbose (no args) — toggle channel override
+	let value: boolean;
+	if (!arg0) {
+		value = !mgr.getVerbose(channelId, platformName);
+	} else if (arg0 === "on" || arg0 === "true") {
+		value = true;
+	} else if (arg0 === "off" || arg0 === "false") {
+		value = false;
+	} else {
+		await platform.postMessage(
+			channelId,
+			`Usage: \`/verbose\` (toggle), \`/verbose on|off\`, \`/verbose global on|off\`, \`/verbose clear\``,
+		);
+		return;
+	}
+
+	mgr.setChannelVerbose(channelId, platformName, value);
+	const globalDefault = mgr.getVerboseDefault();
+	log.logInfo(`Verbose ${value ? "on" : "off"} for ${platformName}/${channelId}`);
 	await platform.postMessage(
 		channelId,
-		`Verbose *${label}*\n_(${settings.verbose ? "working message shown" : "working message hidden"})_`,
+		`Verbose *${value ? "on" : "off"}* for this channel\n_(global default: ${globalDefault ? "on" : "off"})_`,
 	);
 }
 

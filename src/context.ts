@@ -36,10 +36,16 @@ export interface MomSpontaneitySettings {
 	timezone?: string; // IANA timezone, defaults to system
 }
 
+export interface MomVerboseSettings {
+	default?: boolean;
+	[platform: string]: boolean | Record<string, boolean> | undefined;
+}
+
 export interface MomSettings {
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high";
+	verbose?: boolean | MomVerboseSettings;
 	compaction?: Partial<MomCompactionSettings>;
 	retry?: Partial<MomRetrySettings>;
 	spontaneity?: Partial<MomSpontaneitySettings>;
@@ -220,6 +226,70 @@ export class MomSettingsManager {
 
 	getTheme(): string | undefined {
 		return undefined;
+	}
+
+	getVerbose(channelId: string, platform?: string): boolean {
+		const v = this.settings.verbose;
+		// Legacy bare boolean
+		if (typeof v === "boolean") return v;
+		// No verbose config at all
+		if (!v) return true;
+		// Check platform bucket for channel override
+		if (platform) {
+			const bucket = v[platform];
+			if (bucket && typeof bucket === "object" && channelId in bucket) {
+				return (bucket as Record<string, boolean>)[channelId];
+			}
+		}
+		// Fall back to default
+		return v.default !== false; // default true
+	}
+
+	setChannelVerbose(channelId: string, platform: string, value: boolean | null): void {
+		let v = this.settings.verbose;
+		// Migrate bare boolean to object form
+		if (typeof v === "boolean" || !v) {
+			v = { default: typeof v === "boolean" ? v : true };
+			this.settings.verbose = v;
+		}
+		if (!v[platform] || typeof v[platform] !== "object") {
+			(v as any)[platform] = {};
+		}
+		const bucket = v[platform] as Record<string, boolean>;
+		if (value === null) {
+			delete bucket[channelId];
+		} else {
+			bucket[channelId] = value;
+		}
+		this.save();
+	}
+
+	setVerboseDefault(value: boolean): void {
+		let v = this.settings.verbose;
+		if (typeof v === "boolean" || !v) {
+			v = { default: value };
+			this.settings.verbose = v;
+		} else {
+			v.default = value;
+		}
+		this.save();
+	}
+
+	getVerboseDefault(): boolean {
+		const v = this.settings.verbose;
+		if (typeof v === "boolean") return v;
+		if (!v) return true;
+		return v.default !== false;
+	}
+
+	getChannelVerboseOverride(channelId: string, platform: string): boolean | null {
+		const v = this.settings.verbose;
+		if (typeof v === "boolean" || !v) return null;
+		const bucket = v[platform];
+		if (bucket && typeof bucket === "object" && channelId in bucket) {
+			return (bucket as Record<string, boolean>)[channelId];
+		}
+		return null;
 	}
 
 	reload(): void {

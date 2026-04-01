@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
+import { MomSettingsManager } from "../context.js";
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
 import { markdownToDiscordMarkdown, stripDiscordMentions } from "./discord-format.js";
@@ -306,21 +307,6 @@ When mentioning users, use <@userId> format.`;
 	}
 
 	// ==========================================================================
-	// Settings
-	// ==========================================================================
-
-	protected readVerboseSetting(): boolean {
-		try {
-			const settingsPath = join(this.workingDir, "settings.json");
-			if (existsSync(settingsPath)) {
-				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-				return settings.verbose !== false; // default true
-			}
-		} catch { /* ignore */ }
-		return true;
-	}
-
-	// ==========================================================================
 	// Context creation
 	// ==========================================================================
 
@@ -384,7 +370,7 @@ When mentioning users, use <@userId> format.`;
 				users: this.getAllUsers(),
 				channelName: this.channels.get(event.channel)?.name,
 				isEvent,
-				verbose: this.readVerboseSetting(),
+				verbose: new MomSettingsManager(this.workingDir).getVerbose(event.channel, "discord"),
 			},
 			{
 				logBotResponse: (ch, text, ts) => this.logBotResponse(ch, text, ts),
