@@ -24,6 +24,7 @@ export function WorkspaceLayout() {
   const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [awarenessCollapsed, setAwarenessCollapsed] = useState(false);
+  const [centerCollapsed, setCenterCollapsed] = useState(false);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [viewingFile, setViewingFile] = useState<string | null>(null);
@@ -109,6 +110,15 @@ export function WorkspaceLayout() {
     setDisplayOverride(next);
   };
 
+  const toggleCenter = () => {
+    const next = !centerCollapsed;
+    setCenterCollapsed(next);
+    // If hiding center and awareness is also hidden, show awareness
+    if (next && awarenessCollapsed) {
+      setAwarenessCollapsed(false);
+    }
+  };
+
   const CenterPanel = () => {
     if (viewingFile) {
       return <FileViewer path={viewingFile} onClose={closeFileViewer} />;
@@ -140,6 +150,18 @@ export function WorkspaceLayout() {
           {/* agent name removed */}
         </div>
         <div className="header-right">
+          <button
+            className={`header-btn ${centerCollapsed ? 'active' : ''}`}
+            onClick={toggleCenter}
+            title={centerCollapsed ? 'Show terminal/desktop' : 'Hide terminal/desktop'}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="1" y="1" width="14" height="14" rx="1" stroke="currentColor" strokeWidth="1.5" />
+              {!centerCollapsed && (
+                <path d="M5 1v14M5 8h10" stroke="currentColor" strokeWidth="1.5" />
+              )}
+            </svg>
+          </button>
           <button
             className={`header-btn display-toggle ${displayMode === 'desktop' ? 'active' : ''}`}
             onClick={toggleDisplayMode}
@@ -184,9 +206,11 @@ export function WorkspaceLayout() {
         )}
 
         {/* Center: Terminal / Desktop / File Viewer */}
-        <div className="center-panel">
-          <CenterPanel />
-        </div>
+        {!centerCollapsed && (
+          <div className="center-panel">
+            <CenterPanel />
+          </div>
+        )}
 
         {/* Right: Awareness Stream */}
         {!awarenessCollapsed && (
