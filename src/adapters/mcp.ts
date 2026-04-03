@@ -93,7 +93,33 @@ export class McpAdapter implements PlatformAdapter {
 		}
 	}
 
+	private exec(command: string): { stdout: string; stderr: string; code: number } {
+		try {
+			const { execSync } = require("child_process");
+			const stdout = execSync(command, {
+				cwd: this.workingDir,
+				timeout: 120_000,
+				maxBuffer: 10 * 1024 * 1024,
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+			}) as string;
+			return { stdout, stderr: "", code: 0 };
+		} catch (err: unknown) {
+			const e = err as { stdout?: string; stderr?: string; status?: number; message?: string };
+			return {
+				stdout: e.stdout || "",
+				stderr: e.stderr || e.message || "Command failed",
+				code: e.status ?? 1,
+			};
+		}
+	}
+
+	private shellEscape(s: string): string {
+		return `'${s.replace(/'/g, "'\\''")}'`;
+	}
+
 	private registerTools(server: McpServer): void {
+		// ── execute ──────────────────────────────────────────────────────
 		server.registerTool(
 			"execute",
 			{
@@ -102,48 +128,147 @@ export class McpAdapter implements PlatformAdapter {
 			},
 			async ({ command }: { command: string }) => {
 				log.logInfo(`[mcp] execute: ${command.substring(0, 100)}`);
+				const result = this.exec(command);
 
-				try {
-					const { execSync } = await import("child_process");
-					const output = execSync(command, {
-						cwd: this.workingDir,
-						timeout: 120_000,
-						maxBuffer: 10 * 1024 * 1024,
-						encoding: "utf-8",
-						stdio: ["pipe", "pipe", "pipe"],
-					});
+				this.logToFile({
+					date: new Date().toISOString(),
+					channel: "mcp",
+					type: "tool_call",
+					tool: "execute",
+					command,
+					success: result.code === 0,
+					...(result.code !== 0 && { exitCode: result.code }),
+				});
 
-					this.logToFile({
-						date: new Date().toISOString(),
-						channel: "mcp",
-						type: "tool_call",
-						tool: "execute",
-						command,
-						success: true,
-					});
+				const output = result.code === 0
+					? result.stdout || "(no output)"
+					: [result.stdout, result.stderr].filter(Boolean).join("\n");
 
-					return {
-						content: [{ type: "text" as const, text: output || "(no output)" }],
-					};
-				} catch (err: unknown) {
-					const execErr = err as { stdout?: string; stderr?: string; status?: number; message?: string };
-					const output = [execErr.stdout, execErr.stderr].filter(Boolean).join("\n") || execErr.message || "Command failed";
+				return {
+					content: [{ type: "text" as const, text: output }],
+					...(result.code !== 0 && { isError: true }),
+				};
+			},
+		);
 
-					this.logToFile({
-						date: new Date().toISOString(),
-						channel: "mcp",
-						type: "tool_call",
-						tool: "execute",
-						command,
-						success: false,
-						exitCode: execErr.status,
-					});
+		// ── read ─────────────────────────────────────────────────────────
+		server.registerTool(
+			"read",
+			{
+				description: "Read the contents of a file. Use offset/limit for large files.",
+				inputSchema: {
+					path: z.string().describe("Path to the file to read (relative or absolute)"),
+					offset: z.number().optional().describe("Line number to start reading from (1-indexed)"),
+					limit: z.number().optional().describe("Maximum number of lines to read"),
+				},
+			},
+			async ({ path, offset, limit }: { path: string; offset?: number; limit?: number }) => {
+				log.logInfo(`[mcp] read: ${path}`);
+				const escaped = this.shellEscape(path);
 
-					return {
-						content: [{ type: "text" as const, text: output }],
-						isError: true,
-					};
+				// Get total lines
+				const countResult = this.exec(`wc -l < ${escaped}`);
+				if (countResult.code !== 0) {
+					return { content: [{ type: "text" as const, text: countResult.stderr }], isError: true };
 				}
+				const totalLines = parseInt(countResult.stdout.trim(), 10) + 1;
+
+				const startLine = offset ? Math.max(1, offset) : 1;
+				if (startLine > totalLines) {
+					return { content: [{ type: "text" as const, text: `Offset ${offset} is beyond end of file (${totalLines} lines)` }], isError: true };
+				}
+
+				let cmd = startLine === 1 ? `cat ${escaped}` : `tail -n +${startLine} ${escaped}`;
+				if (limit) {
+					cmd += ` | head -n ${limit}`;
+				}
+
+				const result = this.exec(cmd);
+				if (result.code !== 0) {
+					return { content: [{ type: "text" as const, text: result.stderr }], isError: true };
+				}
+
+				const readLines = result.stdout.split("\n").length;
+				const endLine = startLine + readLines - 1;
+				let text = result.stdout;
+				if (endLine < totalLines) {
+					text += `\n\n[Showing lines ${startLine}-${endLine} of ${totalLines}. Use offset=${endLine + 1} to continue]`;
+				}
+
+				this.logToFile({ date: new Date().toISOString(), channel: "mcp", type: "tool_call", tool: "read", path, success: true });
+				return { content: [{ type: "text" as const, text }] };
+			},
+		);
+
+		// ── write ────────────────────────────────────────────────────────
+		server.registerTool(
+			"write",
+			{
+				description: "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+				inputSchema: {
+					path: z.string().describe("Path to the file to write (relative or absolute)"),
+					content: z.string().describe("Content to write to the file"),
+				},
+			},
+			async ({ path, content }: { path: string; content: string }) => {
+				log.logInfo(`[mcp] write: ${path} (${content.length} bytes)`);
+				const escaped = this.shellEscape(path);
+				const dir = path.includes("/") ? path.substring(0, path.lastIndexOf("/")) : ".";
+
+				const cmd = `mkdir -p ${this.shellEscape(dir)} && printf '%s' ${this.shellEscape(content)} > ${escaped}`;
+				const result = this.exec(cmd);
+
+				this.logToFile({ date: new Date().toISOString(), channel: "mcp", type: "tool_call", tool: "write", path, success: result.code === 0 });
+
+				if (result.code !== 0) {
+					return { content: [{ type: "text" as const, text: result.stderr }], isError: true };
+				}
+				return { content: [{ type: "text" as const, text: `Wrote ${content.length} bytes to ${path}` }] };
+			},
+		);
+
+		// ── edit ─────────────────────────────────────────────────────────
+		server.registerTool(
+			"edit",
+			{
+				description: "Edit a file by replacing exact text. The old_text must match exactly one occurrence (including whitespace).",
+				inputSchema: {
+					path: z.string().describe("Path to the file to edit (relative or absolute)"),
+					old_text: z.string().describe("Exact text to find and replace (must match exactly)"),
+					new_text: z.string().describe("New text to replace the old text with"),
+				},
+			},
+			async ({ path, old_text, new_text }: { path: string; old_text: string; new_text: string }) => {
+				log.logInfo(`[mcp] edit: ${path}`);
+				const escaped = this.shellEscape(path);
+
+				// Read file
+				const readResult = this.exec(`cat ${escaped}`);
+				if (readResult.code !== 0) {
+					return { content: [{ type: "text" as const, text: `File not found: ${path}` }], isError: true };
+				}
+
+				const fileContent = readResult.stdout;
+
+				if (!fileContent.includes(old_text)) {
+					return { content: [{ type: "text" as const, text: `Could not find the exact text in ${path}. Must match exactly including whitespace.` }], isError: true };
+				}
+
+				const occurrences = fileContent.split(old_text).length - 1;
+				if (occurrences > 1) {
+					return { content: [{ type: "text" as const, text: `Found ${occurrences} occurrences in ${path}. Must be unique — provide more context.` }], isError: true };
+				}
+
+				const idx = fileContent.indexOf(old_text);
+				const newContent = fileContent.substring(0, idx) + new_text + fileContent.substring(idx + old_text.length);
+
+				const writeResult = this.exec(`printf '%s' ${this.shellEscape(newContent)} > ${escaped}`);
+				if (writeResult.code !== 0) {
+					return { content: [{ type: "text" as const, text: writeResult.stderr }], isError: true };
+				}
+
+				this.logToFile({ date: new Date().toISOString(), channel: "mcp", type: "tool_call", tool: "edit", path, success: true });
+				return { content: [{ type: "text" as const, text: `Replaced ${old_text.length} chars with ${new_text.length} chars in ${path}` }] };
 			},
 		);
 	}
