@@ -121,20 +121,20 @@ export class McpAdapter implements PlatformAdapter {
 	private registerTools(server: McpServer): void {
 		// ── execute ──────────────────────────────────────────────────────
 		server.registerTool(
-			"execute",
+			"bash",
 			{
 				description: "Run a shell command on your TinyFat computer. Returns stdout/stderr.",
 				inputSchema: { command: z.string().describe("Shell command to execute") },
 			},
 			async ({ command }: { command: string }) => {
-				log.logInfo(`[mcp] execute: ${command.substring(0, 100)}`);
+				log.logInfo(`[mcp] bash: ${command.substring(0, 100)}`);
 				const result = this.exec(command);
 
 				this.logToFile({
 					date: new Date().toISOString(),
 					channel: "mcp",
 					type: "tool_call",
-					tool: "execute",
+					tool: "bash",
 					command,
 					success: result.code === 0,
 					...(result.code !== 0 && { exitCode: result.code }),
