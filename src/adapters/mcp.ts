@@ -8,6 +8,7 @@
  * transport internally via @hono/node-server).
  */
 
+import { execSync } from "child_process";
 import { appendFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import { join } from "path";
@@ -95,7 +96,6 @@ export class McpAdapter implements PlatformAdapter {
 
 	private exec(command: string): { stdout: string; stderr: string; code: number } {
 		try {
-			const { execSync } = require("child_process");
 			const stdout = execSync(command, {
 				cwd: this.workingDir,
 				timeout: 120_000,
