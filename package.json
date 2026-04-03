@@ -25,6 +25,7 @@
 		"@mariozechner/pi-agent-core": "0.58.4",
 		"@mariozechner/pi-ai": "0.58.4",
 		"@mariozechner/pi-coding-agent": "0.58.4",
+		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@mozilla/readability": "0.6.0",
 		"@sinclair/typebox": "0.34.48",
 		"@slack/socket-mode": "2.0.5",
@@ -38,7 +39,8 @@
 		"puppeteer-core": "23.11.1",
 		"turndown": "7.2.2",
 		"turndown-plugin-gfm": "1.0.2",
-		"ws": "8.19.0"
+		"ws": "8.19.0",
+		"zod": "^3.25.76"
 	},
 	"overrides": {
 		"axios": "1.13.5"

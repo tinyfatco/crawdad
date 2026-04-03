@@ -10,6 +10,7 @@ import { TelegramPollingAdapter } from "./adapters/telegram-polling.js";
 import { TelegramWebhookAdapter } from "./adapters/telegram-webhook.js";
 import { VoiceAdapter } from "./adapters/voice.js";
 import { WebAdapter } from "./adapters/web.js";
+import { McpAdapter } from "./adapters/mcp.js";
 import { WebVoiceBridgeAdapter, handleWebVoiceSession } from "./adapters/web-voice.js";
 import { handleTerminalUpgrade } from "./terminal.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
@@ -168,6 +169,9 @@ function parseArgs(): ParsedArgs {
 		}
 		if (process.env.MOM_WEB_CHAT === "true") {
 			adapters.push("web");
+		}
+		if (process.env.MOM_MCP === "true") {
+			adapters.push("mcp");
 		}
 		if (process.env.MOM_ELEVENLABS_API_KEY) {
 			adapters.push("voice");
@@ -424,6 +428,9 @@ function createAdapter(name: string): AdapterWithHandler {
 		case "web": {
 			return new WebAdapter({ workingDir });
 		}
+		case "mcp": {
+			return new McpAdapter({ workingDir });
+		}
 		case "voice": {
 			const elevenLabsKey = process.env.MOM_ELEVENLABS_API_KEY;
 			const elevenLabsVoice = process.env.MOM_ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM"; // Default: Rachel
@@ -440,7 +447,7 @@ function createAdapter(name: string): AdapterWithHandler {
 			});
 		}
 		default:
-			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord:webhook', 'email:webhook', 'web', or 'voice'.`);
+			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord:webhook', 'email:webhook', 'web', 'mcp', or 'voice'.`);
 			process.exit(1);
 	}
 }
@@ -659,6 +666,7 @@ const DISPATCH_PATHS: Record<string, string> = {
 	"discord:webhook": "/discord/interactions",
 	"email:webhook": "/email/inbound",
 	"web": "/web/chat",
+	"mcp": "/mcp",
 };
 
 // Start gateway — binds HTTP port before adapter init so callers can
