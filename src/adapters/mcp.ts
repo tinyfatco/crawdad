@@ -295,7 +295,11 @@ export class McpAdapter implements PlatformAdapter {
 	// ==========================================================================
 
 	logToFile(entry: object): void {
-		appendFileSync(join(this.workingDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+		try {
+			appendFileSync(join(this.workingDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+		} catch {
+			// R2 FUSE mount may have dropped — don't let logging failures kill tool responses
+		}
 	}
 
 	logBotResponse(_channel: string, _text: string, _ts: string): void {}
