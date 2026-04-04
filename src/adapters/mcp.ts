@@ -8,7 +8,7 @@
  * transport internally via @hono/node-server).
  */
 
-import { execSync } from "child_process";
+import { exec as execCb } from "child_process";
 import { appendFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import { join } from "path";
@@ -94,24 +94,26 @@ export class McpAdapter implements PlatformAdapter {
 		}
 	}
 
-	private exec(command: string): { stdout: string; stderr: string; code: number } {
-		try {
-			const stdout = execSync(command, {
+	private exec(command: string): Promise<{ stdout: string; stderr: string; code: number }> {
+		return new Promise((resolve) => {
+			execCb(command, {
 				cwd: this.workingDir,
 				timeout: 120_000,
 				maxBuffer: 10 * 1024 * 1024,
 				encoding: "utf-8",
-				stdio: ["pipe", "pipe", "pipe"],
-			}) as string;
-			return { stdout, stderr: "", code: 0 };
-		} catch (err: unknown) {
-			const e = err as { stdout?: string; stderr?: string; status?: number; message?: string };
-			return {
-				stdout: e.stdout || "",
-				stderr: e.stderr || e.message || "Command failed",
-				code: e.status ?? 1,
-			};
-		}
+			}, (err, stdout, stderr) => {
+				if (err) {
+					const e = err as { code?: number; killed?: boolean };
+					resolve({
+						stdout: (stdout as string) || "",
+						stderr: (stderr as string) || err.message || "Command failed",
+						code: e.code ?? 1,
+					});
+				} else {
+					resolve({ stdout: stdout as string, stderr: stderr as string, code: 0 });
+				}
+			});
+		});
 	}
 
 	private shellEscape(s: string): string {
@@ -128,7 +130,7 @@ export class McpAdapter implements PlatformAdapter {
 			},
 			async ({ command }: { command: string }) => {
 				log.logInfo(`[mcp] bash: ${command.substring(0, 100)}`);
-				const result = this.exec(command);
+				const result = await this.exec(command);
 
 				this.logToFile({
 					date: new Date().toISOString(),
@@ -167,7 +169,7 @@ export class McpAdapter implements PlatformAdapter {
 				const escaped = this.shellEscape(path);
 
 				// Get total lines
-				const countResult = this.exec(`wc -l < ${escaped}`);
+				const countResult = await this.exec(`wc -l < ${escaped}`);
 				if (countResult.code !== 0) {
 					return { content: [{ type: "text" as const, text: countResult.stderr }], isError: true };
 				}
@@ -183,7 +185,7 @@ export class McpAdapter implements PlatformAdapter {
 					cmd += ` | head -n ${limit}`;
 				}
 
-				const result = this.exec(cmd);
+				const result = await this.exec(cmd);
 				if (result.code !== 0) {
 					return { content: [{ type: "text" as const, text: result.stderr }], isError: true };
 				}
@@ -216,7 +218,7 @@ export class McpAdapter implements PlatformAdapter {
 				const dir = path.includes("/") ? path.substring(0, path.lastIndexOf("/")) : ".";
 
 				const cmd = `mkdir -p ${this.shellEscape(dir)} && printf '%s' ${this.shellEscape(content)} > ${escaped}`;
-				const result = this.exec(cmd);
+				const result = await this.exec(cmd);
 
 				this.logToFile({ date: new Date().toISOString(), channel: "mcp", type: "tool_call", tool: "write", path, success: result.code === 0 });
 
@@ -243,7 +245,7 @@ export class McpAdapter implements PlatformAdapter {
 				const escaped = this.shellEscape(path);
 
 				// Read file
-				const readResult = this.exec(`cat ${escaped}`);
+				const readResult = await this.exec(`cat ${escaped}`);
 				if (readResult.code !== 0) {
 					return { content: [{ type: "text" as const, text: `File not found: ${path}` }], isError: true };
 				}
@@ -262,7 +264,7 @@ export class McpAdapter implements PlatformAdapter {
 				const idx = fileContent.indexOf(old_text);
 				const newContent = fileContent.substring(0, idx) + new_text + fileContent.substring(idx + old_text.length);
 
-				const writeResult = this.exec(`printf '%s' ${this.shellEscape(newContent)} > ${escaped}`);
+				const writeResult = await this.exec(`printf '%s' ${this.shellEscape(newContent)} > ${escaped}`);
 				if (writeResult.code !== 0) {
 					return { content: [{ type: "text" as const, text: writeResult.stderr }], isError: true };
 				}
