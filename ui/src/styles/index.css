@@ -777,19 +777,20 @@ html, body, #root {
   width: 100%;
   flex-shrink: 0;
   border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .input-container {
   display: flex;
   gap: 0.4rem;
   align-items: flex-end;
-  padding: 0.5rem 0.75rem;
+  padding: 0.75rem;
 }
 
 .input-bar textarea {
   flex: 1;
   padding: 0.25rem 0;
-  font-size: 0.875rem;
+  font-size: 1rem;
   background: transparent;
   border: none;
   color: var(--text);
