@@ -514,8 +514,14 @@ function createRunner(
 	let onActivity: (() => void) | undefined;
 
 	// Event handler
+	let _eventSeq = 0;
 	const eventHandler = async (event: any) => {
 		if (!runState.ctx || !runState.logCtx || !runState.queue) return;
+
+		_eventSeq++;
+		if (event.type === "tool_execution_start" || event.type === "message_start" || event.type === "message_end") {
+			log.logInfo(`[debug] eventHandler seq=${_eventSeq} type=${event.type} id=${event.toolCallId || event.message?.role || "?"}`);
+		}
 
 		// Signal activity on any substantive event
 		onActivity?.();
