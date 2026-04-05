@@ -87,19 +87,74 @@ function getImageMimeType(filename: string): string | undefined {
 	return IMAGE_MIME_TYPES[filename.toLowerCase().split(".").pop() || ""];
 }
 
-function getMemory(workspaceDir: string): string {
-	const memoryPath = join(workspaceDir, "MEMORY.md");
-	if (existsSync(memoryPath)) {
+function readWorkspaceFile(workspaceDir: string, filename: string): string {
+	const filePath = join(workspaceDir, filename);
+	if (existsSync(filePath)) {
 		try {
-			const content = readFileSync(memoryPath, "utf-8").trim();
-			if (content) {
-				return content;
-			}
+			const content = readFileSync(filePath, "utf-8").trim();
+			if (content) return content;
 		} catch (error) {
-			log.logWarning("Failed to read memory", `${memoryPath}: ${error}`);
+			log.logWarning(`Failed to read ${filename}`, `${filePath}: ${error}`);
 		}
 	}
-	return "(no working memory yet)";
+	return "";
+}
+
+function getRecentDailyMemory(workspaceDir: string): string {
+	const memoryDir = join(workspaceDir, "memory");
+	if (!existsSync(memoryDir)) return "";
+
+	const today = new Date();
+	const yesterday = new Date(today);
+	yesterday.setDate(yesterday.getDate() - 1);
+	const fmt = (d: Date) => d.toISOString().slice(0, 10);
+
+	const parts: string[] = [];
+	for (const date of [fmt(today), fmt(yesterday)]) {
+		const content = readWorkspaceFile(memoryDir, `${date}.md`);
+		if (content) parts.push(`### ${date}\n${content}`);
+	}
+	return parts.join("\n\n");
+}
+
+/** Check if this is a fresh workspace in onboarding mode. */
+function hasBootstrap(workspaceDir: string): boolean {
+	return existsSync(join(workspaceDir, "BOOTSTRAP.md"));
+}
+
+/**
+ * Build the structured workspace context for the session preamble.
+ * In onboarding mode (BOOTSTRAP.md exists), returns just the bootstrap content.
+ * In normal mode, returns all workspace files.
+ */
+function getWorkspaceContext(workspaceDir: string): string {
+	if (hasBootstrap(workspaceDir)) {
+		const bootstrap = readWorkspaceFile(workspaceDir, "BOOTSTRAP.md");
+		return `Bootstrap:\n${bootstrap}`;
+	}
+
+	const sections: string[] = [];
+
+	const agents = readWorkspaceFile(workspaceDir, "AGENTS.md");
+	if (agents) sections.push(`Agents:\n${agents}`);
+
+	const identity = readWorkspaceFile(workspaceDir, "IDENTITY.md");
+	if (identity) sections.push(`Identity:\n${identity}`);
+
+	const soul = readWorkspaceFile(workspaceDir, "SOUL.md");
+	if (soul) sections.push(`Soul:\n${soul}`);
+
+	const user = readWorkspaceFile(workspaceDir, "USER.md");
+	if (user) sections.push(`User Profile:\n${user}`);
+
+	const memory = readWorkspaceFile(workspaceDir, "MEMORY.md");
+	if (memory) sections.push(`Memory:\n${memory}`);
+	else sections.push("Memory:\n(no working memory yet)");
+
+	const recent = getRecentDailyMemory(workspaceDir);
+	if (recent) sections.push(`Recent:\n${recent}`);
+
+	return sections.join("\n\n");
 }
 
 // Skills cache — skills rarely change, no need to re-scan R2/FUSE on every message
@@ -229,10 +284,10 @@ Use \`ping\` with channel ID to message a different channel. Channel ID formats:
 
 /**
  * Build the dynamic session preamble injected into each user message.
- * Contains state that changes between turns: channels, users, skills, memory, attention.
+ * Contains state that changes between turns: channels, users, skills, workspace context, attention.
  */
 function buildSessionPreamble(
-	memory: string,
+	workspaceContext: string,
 	channels: ChannelInfo[],
 	users: UserInfo[],
 	skills: Skill[],
@@ -254,8 +309,7 @@ Users:
 ${userMappings}
 Skills:
 ${skillsSection}
-Memory:
-${memory}
+${workspaceContext}
 </session_context>`;
 }
 
@@ -663,8 +717,8 @@ function createRunner(
 			}
 
 			const tMem = performance.now();
-			const memory = getMemory(join(awarenessDir, ".."));
-			log.logInfo(`[perf] getMemory: ${(performance.now() - tMem).toFixed(0)}ms`);
+			const workspaceContext = getWorkspaceContext(join(awarenessDir, ".."));
+			log.logInfo(`[perf] getWorkspaceContext: ${(performance.now() - tMem).toFixed(0)}ms`);
 
 			const tSkills = performance.now();
 			const skills = loadMomSkills(awarenessDir, workspacePath, extraSkillsDirs);
@@ -682,7 +736,7 @@ function createRunner(
 
 			// Build dynamic preamble (injected into user message below)
 			const sessionPreamble = buildSessionPreamble(
-				memory,
+				workspaceContext,
 				ctx.channels,
 				ctx.users,
 				skills,
@@ -756,7 +810,7 @@ function createRunner(
 			};
 
 			// Log context info
-			log.logInfo(`Context sizes - preamble: ${sessionPreamble.length} chars, memory: ${memory.length} chars`);
+			log.logInfo(`Context sizes - preamble: ${sessionPreamble.length} chars, workspace: ${workspaceContext.length} chars`);
 			log.logInfo(`Channels: ${ctx.channels.length}, Users: ${ctx.users.length}`);
 
 			// Build user message with timestamp, channel tag, and username
