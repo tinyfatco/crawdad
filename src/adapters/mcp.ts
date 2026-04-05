@@ -58,6 +58,23 @@ export class McpAdapter implements PlatformAdapter {
 	 * Creates a fresh stateless MCP server per request.
 	 */
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
+		// VPS mode: verify X-Tools-Token header to prevent unauthenticated access
+		// through the Cloudflare Tunnel. Without this, anyone who knows the tunnel
+		// hostname can execute arbitrary commands.
+		const requiredToken = process.env.MOM_MCP_AUTH_TOKEN;
+		if (requiredToken) {
+			const provided = req.headers["x-tools-token"];
+			if (provided !== requiredToken) {
+				res.writeHead(401, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({
+					jsonrpc: "2.0",
+					error: { code: -32001, message: "Unauthorized" },
+					id: null,
+				}));
+				return;
+			}
+		}
+
 		this.handleMcpRequest(req, res).catch((err) => {
 			log.logWarning("MCP request error", err instanceof Error ? err.message : String(err));
 			if (!res.headersSent) {
