@@ -307,6 +307,7 @@ export class EventsWatcher {
 					timezone: data.timezone,
 					spontaneity: data.spontaneity,
 					quietHours: data.quietHours,
+					action: data.action,
 				};
 
 			default:
