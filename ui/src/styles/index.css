@@ -124,6 +124,9 @@ html, body, #root {
 .sidebar-header {
   padding: 8px 12px 4px;
   flex-shrink: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .sidebar-title {
@@ -1055,6 +1058,64 @@ html, body, #root {
 @keyframes slide-in {
   from { transform: translateX(-100%); }
   to { transform: translateX(0); }
+}
+
+/* ========================================================================
+   Upload
+   ======================================================================== */
+
+.upload-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+}
+.upload-btn:hover { color: var(--accent); background: var(--accent-muted); }
+.upload-btn:disabled { opacity: 0.4; cursor: default; }
+
+.upload-overlay {
+  position: fixed;
+  top: 40px; left: 0; right: 0; bottom: 0;
+  background: rgba(59, 130, 246, 0.08);
+  border: 2px dashed var(--accent);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.upload-overlay-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: var(--accent);
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.upload-toast {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text);
+  z-index: 1001;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+.upload-toast-error {
+  border-color: var(--error);
+  color: var(--error);
 }
 
 @media (max-width: 768px) {

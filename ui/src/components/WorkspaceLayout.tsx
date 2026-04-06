@@ -10,12 +10,14 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useConfig } from '../hooks/useConfig';
 import { FileTree } from './FileTree';
 import { FileViewer } from './FileViewer';
 import { TerminalPane } from './TerminalPane';
 import { DesktopPane } from './DesktopPane';
 import { AwarenessPane } from './AwarenessPane';
+import { UploadZone } from './UploadZone';
 
 export function WorkspaceLayout() {
   const { config, isLoading: configLoading } = useConfig();
@@ -31,8 +33,22 @@ export function WorkspaceLayout() {
   const [sidebarWidth, setSidebarWidth] = useState(220);
   const [awarenessWidth, setAwarenessWidth] = useState(360);
 
+  const queryClient = useQueryClient();
   const containerRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef<'sidebar' | 'awareness' | null>(null);
+
+  // File upload — target the currently-selected directory, or 'attachments' by default
+  const uploadTargetDir = selectedPath
+    ? (selectedPath.includes('.') ? selectedPath.split('/').slice(0, -1).join('/') || 'attachments' : selectedPath)
+    : 'attachments';
+
+  const upload = UploadZone({
+    targetDir: uploadTargetDir,
+    onUploaded: () => {
+      // Invalidate all file tree queries to refresh
+      queryClient.invalidateQueries({ queryKey: ['files'] });
+    },
+  });
 
   const handleFileSelect = (path: string) => {
     setSelectedPath(path);
@@ -191,13 +207,19 @@ export function WorkspaceLayout() {
         </div>
       </header>
 
-      <div className="workspace-body" ref={containerRef}>
+      {upload.FileInput}
+      <div className="workspace-body" ref={containerRef} {...upload.dragProps}>
         {/* Left: File Explorer */}
         {!sidebarCollapsed && (
           <>
             <div className="sidebar-panel" style={{ width: sidebarWidth }}>
               <div className="sidebar-header">
                 <span className="sidebar-title">Files</span>
+                <button className="upload-btn" onClick={upload.openFilePicker} title="Upload files" disabled={upload.uploading}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
               </div>
               <FileTree selectedPath={selectedPath} onFileSelect={handleFileSelect} />
             </div>
@@ -222,6 +244,26 @@ export function WorkspaceLayout() {
           </>
         )}
       </div>
+
+      {/* Upload drag overlay */}
+      {upload.isDragging && (
+        <div className="upload-overlay">
+          <div className="upload-overlay-content">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span>Drop files to upload</span>
+          </div>
+        </div>
+      )}
+
+      {/* Upload progress/error toast */}
+      {upload.uploading && (
+        <div className="upload-toast">Uploading...</div>
+      )}
+      {upload.error && (
+        <div className="upload-toast upload-toast-error">{upload.error}</div>
+      )}
 
       {/* Mobile drawer overlay */}
       {mobileDrawerOpen && (

@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import type { Socket } from "net";
-import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync } from "fs";
-import { join, extname, resolve, normalize } from "path";
+import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync, writeFileSync, mkdirSync } from "fs";
+import { join, extname, resolve, normalize, dirname } from "path";
 import * as log from "./log.js";
 
 /**
@@ -229,6 +229,90 @@ export class Gateway {
 		}
 	}
 
+	/** Handle POST /api/upload — multipart file upload to workspace */
+	private handleUploadApi(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.workspaceDir) {
+			res.writeHead(500, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: "No workspace configured" }));
+			return;
+		}
+
+		const contentType = req.headers["content-type"] || "";
+		const boundaryMatch = contentType.match(/boundary=(.+)/);
+		if (!boundaryMatch) {
+			res.writeHead(400, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: "Missing multipart boundary" }));
+			return;
+		}
+
+		const MAX_UPLOAD = 50 * 1024 * 1024; // 50MB total
+		const chunks: Buffer[] = [];
+		let totalSize = 0;
+
+		req.on("data", (chunk: Buffer) => {
+			totalSize += chunk.length;
+			if (totalSize > MAX_UPLOAD) {
+				res.writeHead(413, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Upload too large (50MB max)" }));
+				req.destroy();
+				return;
+			}
+			chunks.push(chunk);
+		});
+
+		req.on("end", () => {
+			if (totalSize > MAX_UPLOAD) return; // already responded
+
+			const body = Buffer.concat(chunks);
+			const boundary = boundaryMatch![1];
+			const uploaded: string[] = [];
+
+			try {
+				const files = parseMultipart(body, boundary);
+
+				// Extract target directory from form fields
+				let targetDir = "attachments";
+				for (const file of files) {
+					if (file.name === "targetDir" && !file.filename) {
+						targetDir = file.data.toString("utf-8").trim() || "attachments";
+						continue;
+					}
+					if (!file.filename) continue;
+
+					// Sanitize filename — strip path separators, collapse dots
+					const safeName = file.filename.replace(/[/\\]/g, "_").replace(/\.{2,}/g, ".");
+					if (!safeName) continue;
+
+					const relPath = join(targetDir, safeName);
+					const fullPath = resolve(this.workspaceDir!, relPath);
+
+					// Path traversal check
+					if (!fullPath.startsWith(this.workspaceDir!)) {
+						log.logWarning("[upload] path traversal attempt blocked", relPath);
+						continue;
+					}
+
+					// Ensure directory exists
+					const dir = dirname(fullPath);
+					if (!existsSync(dir)) {
+						mkdirSync(dir, { recursive: true });
+					}
+
+					writeFileSync(fullPath, file.data);
+					uploaded.push(relPath);
+					log.logInfo(`[upload] wrote ${relPath} (${file.data.length} bytes)`);
+				}
+
+				res.writeHead(200, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ uploaded }));
+			} catch (err) {
+				log.logWarning("[upload] parse error", err instanceof Error ? err.message : String(err));
+				res.writeHead(400, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Failed to parse upload" }));
+			}
+		});
+	}
+
 	/** Handle GET /awareness/backlog — returns last N lines of context.jsonl as JSON array */
 	private handleAwarenessBacklog(req: IncomingMessage, res: ServerResponse): void {
 		if (!this.workspaceDir) {
@@ -418,6 +502,12 @@ export class Gateway {
 				}
 			}
 
+			// File upload API
+			if (req.method === "POST" && urlPath === "/api/upload") {
+				this.handleUploadApi(req, res);
+				return;
+			}
+
 			// POST routes — webhook adapters (adapter-specific auth, no web token check)
 			if (req.method === "POST") {
 				const handler = this.routes.get(urlPath);
@@ -477,4 +567,77 @@ export class Gateway {
 			this.server = null;
 		}
 	}
+}
+
+// =============================================================================
+// Multipart form-data parser (no dependencies)
+// =============================================================================
+
+interface MultipartFile {
+	name: string;
+	filename?: string;
+	contentType?: string;
+	data: Buffer;
+}
+
+function parseMultipart(body: Buffer, boundary: string): MultipartFile[] {
+	const files: MultipartFile[] = [];
+	const delimBuf = Buffer.from(`--${boundary}`);
+	const endBuf = Buffer.from(`--${boundary}--`);
+	const crlfcrlf = Buffer.from("\r\n\r\n");
+
+	let pos = 0;
+	while (pos < body.length) {
+		const partStart = bufferIndexOf(body, delimBuf, pos);
+		if (partStart === -1) break;
+
+		const afterDelim = partStart + delimBuf.length;
+		// Check for final boundary
+		if (body.slice(afterDelim, afterDelim + 2).toString() === "--") break;
+
+		const headerStart = afterDelim + 2; // skip \r\n after boundary
+		const headerEnd = bufferIndexOf(body, crlfcrlf, headerStart);
+		if (headerEnd === -1) break;
+
+		const headers = body.slice(headerStart, headerEnd).toString("utf-8");
+		const dataStart = headerEnd + 4; // skip \r\n\r\n
+
+		// Find next boundary to determine data end
+		const nextBoundary = bufferIndexOf(body, delimBuf, dataStart);
+		const dataEnd = nextBoundary === -1 ? body.length : nextBoundary - 2; // -2 for \r\n before boundary
+
+		const data = body.slice(dataStart, dataEnd);
+
+		// Parse headers
+		const nameMatch = headers.match(/name="([^"]+)"/);
+		const filenameMatch = headers.match(/filename="([^"]+)"/);
+		const ctMatch = headers.match(/Content-Type:\s*(.+)/i);
+
+		if (nameMatch) {
+			files.push({
+				name: nameMatch[1],
+				filename: filenameMatch?.[1],
+				contentType: ctMatch?.[1]?.trim(),
+				data,
+			});
+		}
+
+		pos = nextBoundary === -1 ? body.length : nextBoundary;
+	}
+
+	return files;
+}
+
+function bufferIndexOf(buf: Buffer, search: Buffer, fromIndex: number): number {
+	for (let i = fromIndex; i <= buf.length - search.length; i++) {
+		let found = true;
+		for (let j = 0; j < search.length; j++) {
+			if (buf[i + j] !== search[j]) {
+				found = false;
+				break;
+			}
+		}
+		if (found) return i;
+	}
+	return -1;
 }
