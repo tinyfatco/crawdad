@@ -229,9 +229,7 @@ function buildSystemPrompt(
 		? `Docker container (Alpine Linux). Working directory: /. Install tools with apk add.`
 		: `Host machine. Working directory: ${process.cwd()}. Be careful with system modifications.`;
 
-	return `You are mom, a chat bot assistant. Be concise. No emojis.
-
-## Context
+	return `## Context
 - For current date/time, use: date
 - For older history beyond your context, search log.jsonl with jq/grep.
 - Each message includes a <session_context> block with current channels, users, skills, memory, and which channel you're attending. Always use the latest one.
