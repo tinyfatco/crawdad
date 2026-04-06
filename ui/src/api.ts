@@ -21,6 +21,19 @@ export function apiUrl(endpoint: string): string {
   return base + relative;
 }
 
+/** Save file contents to the agent workspace. */
+export async function saveFile(path: string, content: string): Promise<void> {
+  const resp = await fetch(apiUrl('/api/file/save'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, content }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: 'Save failed' }));
+    throw new Error(err.error || `Save failed: ${resp.status}`);
+  }
+}
+
 /** Upload files to the agent workspace. Returns list of uploaded paths. */
 export async function uploadFiles(files: File[], targetDir = 'attachments'): Promise<string[]> {
   const form = new FormData();

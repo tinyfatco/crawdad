@@ -981,6 +981,13 @@ html, body, #root {
   background: var(--surface);
 }
 
+.file-viewer-header-left,
+.file-viewer-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .file-viewer-path {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -989,6 +996,40 @@ html, body, #root {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.file-viewer-dirty {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.file-viewer-toggle {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+}
+.file-viewer-toggle:hover { color: var(--accent); background: var(--accent-muted); }
+.file-viewer-toggle.active { color: var(--accent); }
+
+.file-viewer-save {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.file-viewer-save:hover { opacity: 0.9; }
+.file-viewer-save:disabled { opacity: 0.5; cursor: default; }
 
 .file-viewer-close {
   background: none;
@@ -1002,6 +1043,15 @@ html, body, #root {
 }
 
 .file-viewer-close:hover { background: var(--bg-secondary); color: var(--text); }
+
+.file-viewer-error {
+  padding: 4px 12px;
+  background: var(--error);
+  color: white;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
 
 .file-viewer-content {
   flex: 1;
@@ -1018,16 +1068,54 @@ html, body, #root {
 
 .file-viewer-status.error { color: var(--error); }
 
-.file-viewer-pre {
+.file-viewer-editor {
+  width: 100%;
+  height: 100%;
   margin: 0;
   padding: 12px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: var(--bg);
+  color: var(--text);
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.6;
-  color: var(--text);
-  white-space: pre-wrap;
-  word-break: break-all;
+  tab-size: 2;
 }
+
+.file-viewer-markdown {
+  padding: 16px 20px;
+}
+
+.file-viewer-markdown .markdown-content h1 { font-size: 1.6em; font-weight: 600; margin: 0 0 0.6em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+.file-viewer-markdown .markdown-content h2 { font-size: 1.3em; font-weight: 600; margin: 1.2em 0 0.4em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
+.file-viewer-markdown .markdown-content h3 { font-size: 1.1em; font-weight: 600; margin: 1em 0 0.3em; }
+.file-viewer-markdown .markdown-content p { margin: 0 0 0.8em; line-height: 1.7; }
+.file-viewer-markdown .markdown-content p:last-child { margin-bottom: 0; }
+.file-viewer-markdown .markdown-content ul,
+.file-viewer-markdown .markdown-content ol { margin: 0 0 0.8em; padding-left: 1.5rem; }
+.file-viewer-markdown .markdown-content li { margin-bottom: 0.3em; line-height: 1.6; }
+.file-viewer-markdown .markdown-content code { font-family: var(--font-mono); font-size: 0.9em; background: var(--bg-secondary); padding: 0.15em 0.4em; border-radius: 3px; }
+.file-viewer-markdown .markdown-content pre { background: var(--bg-secondary); padding: 12px; border-radius: 6px; overflow-x: auto; margin: 0 0 0.8em; }
+.file-viewer-markdown .markdown-content pre code { background: none; padding: 0; font-size: 12px; }
+.file-viewer-markdown .markdown-content a { color: var(--accent); text-decoration: none; }
+.file-viewer-markdown .markdown-content a:hover { text-decoration: underline; }
+.file-viewer-markdown .markdown-content blockquote { border-left: 3px solid var(--border); padding-left: 12px; margin: 0 0 0.8em; color: var(--text-muted); }
+.file-viewer-markdown .markdown-content table { border-collapse: collapse; margin: 0 0 0.8em; width: 100%; }
+.file-viewer-markdown .markdown-content th,
+.file-viewer-markdown .markdown-content td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; font-size: 13px; }
+.file-viewer-markdown .markdown-content th { background: var(--bg-secondary); font-weight: 600; }
+.file-viewer-markdown .markdown-content hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
+.file-viewer-markdown .markdown-content img { max-width: 100%; border-radius: 4px; }
+
+.file-viewer-image {
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.file-viewer-image img { max-width: 100%; max-height: 100%; object-fit: contain; }
 
 /* ========================================================================
    Mobile

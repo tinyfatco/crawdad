@@ -229,6 +229,71 @@ export class Gateway {
 		}
 	}
 
+	/** Handle POST /api/file/save — write file contents */
+	private handleFileSaveApi(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.workspaceDir) {
+			res.writeHead(500, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: "No workspace configured" }));
+			return;
+		}
+
+		const chunks: Buffer[] = [];
+		let totalSize = 0;
+		const MAX_SIZE = 5 * 1024 * 1024;
+
+		req.on("data", (chunk: Buffer) => {
+			totalSize += chunk.length;
+			if (totalSize > MAX_SIZE) {
+				res.writeHead(413, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "File too large (>5MB)" }));
+				req.destroy();
+				return;
+			}
+			chunks.push(chunk);
+		});
+
+		req.on("end", () => {
+			if (totalSize > MAX_SIZE) return;
+
+			let payload: { path?: string; content?: string };
+			try {
+				payload = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+			} catch {
+				res.writeHead(400, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Invalid JSON" }));
+				return;
+			}
+
+			if (!payload.path || typeof payload.content !== "string") {
+				res.writeHead(400, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Missing path or content" }));
+				return;
+			}
+
+			const fullPath = resolve(this.workspaceDir!, payload.path);
+			if (!fullPath.startsWith(this.workspaceDir!)) {
+				res.writeHead(403, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Path outside workspace" }));
+				return;
+			}
+
+			try {
+				const dir = dirname(fullPath);
+				if (!existsSync(dir)) {
+					mkdirSync(dir, { recursive: true });
+				}
+				writeFileSync(fullPath, payload.content, "utf-8");
+				log.logInfo(`[save] wrote ${payload.path} (${payload.content.length} bytes)`);
+				res.writeHead(200, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ ok: true }));
+			} catch (err) {
+				log.logWarning("[save] write error", err instanceof Error ? err.message : String(err));
+				res.writeHead(500, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Failed to write file" }));
+			}
+		});
+	}
+
 	/** Handle POST /api/upload — multipart file upload to workspace */
 	private handleUploadApi(req: IncomingMessage, res: ServerResponse): void {
 		if (!this.workspaceDir) {
@@ -500,6 +565,12 @@ export class Gateway {
 					this.serveStatic(indexPath, res);
 					return;
 				}
+			}
+
+			// File save API
+			if (req.method === "POST" && urlPath === "/api/file/save") {
+				this.handleFileSaveApi(req, res);
+				return;
 			}
 
 			// File upload API
