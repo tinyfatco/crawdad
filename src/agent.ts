@@ -472,6 +472,7 @@ function createRunner(
 
 	// Session created lazily on first run
 	let session: AgentSession | null = null;
+	let unsubscribeSession: (() => void) | null = null;
 	const getSession = () => {
 		if (!session) {
 			session = new AgentSession({
@@ -483,7 +484,7 @@ function createRunner(
 				resourceLoader,
 				baseToolsOverride,
 			});
-			session.subscribe(eventHandler);
+			unsubscribeSession = session.subscribe(eventHandler);
 		}
 		return session;
 	};
@@ -1079,7 +1080,9 @@ function createRunner(
 			// Truncate context.jsonl
 			writeFileSync(contextFile, "", "utf-8");
 
-			// Reset in-memory state
+			// Reset in-memory state — unsubscribe old session to prevent listener leak
+			unsubscribeSession?.();
+			unsubscribeSession = null;
 			agent.replaceMessages([]);
 			sessionManager = null;
 			session = null;
