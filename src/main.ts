@@ -1198,7 +1198,7 @@ To change these, edit \`settings.json\` directly.
 	const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 	const compactionEvent = {
 		type: "periodic",
-		schedule: "0 4 * * *",
+		schedule: "0 10 * * *",
 		timezone: tz,
 		text: "auto-compaction",
 		action: "compact",
