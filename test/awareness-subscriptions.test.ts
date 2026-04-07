@@ -3,9 +3,9 @@
  *
  * Run: npx tsx test/awareness-subscriptions.test.ts
  *
- * Covers: filter wildcard behavior, formatter cases, rate limiter
- * burst+coalesce, loop-guard auto-exclusion, malformed JSON ignored,
- * disabled subscription skipped.
+ * Covers: mode=mirror (default) covers all message types, mode=responses
+ * filters to assistant text only, formatter cases, rate limiter burst+
+ * coalesce, loop guard, malformed JSON, disabled, unknown adapter.
  */
 
 import { mkdirSync, writeFileSync, appendFileSync, rmSync } from "fs";
@@ -24,16 +24,6 @@ const SUBS_FILE = join(AWARENESS_DIR, "subscriptions.json");
 
 let passed = 0;
 let failed = 0;
-
-function assert(cond: boolean, msg: string): void {
-	if (cond) {
-		passed++;
-		console.log(`  ✓ ${msg}`);
-	} else {
-		failed++;
-		console.log(`  ✗ ${msg}`);
-	}
-}
 
 function assertEq<T>(actual: T, expected: T, msg: string): void {
 	const a = JSON.stringify(actual);
@@ -109,6 +99,15 @@ function assistantTextLine(text: string): string {
 	});
 }
 
+function assistantThinkingLine(text: string): string {
+	return JSON.stringify({
+		type: "message",
+		id: "th-" + Math.random(),
+		timestamp: new Date().toISOString(),
+		message: { role: "assistant", content: [{ type: "thinking", thinking: text }] },
+	});
+}
+
 function assistantToolCallLine(name: string): string {
 	return JSON.stringify({
 		type: "message",
@@ -133,7 +132,7 @@ function toolResultLine(isError: boolean, result: string): string {
 	});
 }
 
-function setup(): {
+function setup(opts: { bucketBurst?: number; refillIntervalMs?: number } = {}): {
 	emitter: AwarenessEmitter;
 	calls: FakeCall[];
 	pump: AwarenessSubscriptionPump;
@@ -144,7 +143,11 @@ function setup(): {
 	const emitter = new AwarenessEmitter(CONTEXT_FILE, 50);
 	const calls: FakeCall[] = [];
 	const adapter = makeFakeAdapter("telegram", calls);
-	const pump = new AwarenessSubscriptionPump(TEMP_DIR, emitter, [adapter]);
+	// Default to a huge burst so non-rate-limit tests aren't perturbed by it.
+	const pump = new AwarenessSubscriptionPump(TEMP_DIR, emitter, [adapter], {
+		bucketBurst: opts.bucketBurst ?? 1000,
+		refillIntervalMs: opts.refillIntervalMs ?? 5_000,
+	});
 	return { emitter, calls, pump };
 }
 
@@ -161,84 +164,59 @@ async function run(): Promise<void> {
 	console.log(`\nawareness subscription pump tests (workspace: ${TEMP_DIR})\n`);
 
 	// ----------------------------------------------------------------
-	console.log("filter: wildcard (no filter) matches everything");
+	console.log("mode=mirror (default): covers user, assistant text, thinking, tool call, tool result");
 	{
 		const { emitter, calls, pump } = setup();
 		writeSubs([{ id: "s1", adapter: "telegram", destination: "chat-A" }]);
 		pump.start();
 
-		await appendAndWait(assistantTextLine("hello"));
 		await appendAndWait(userLine("web", "alex", "hi"));
+		await appendAndWait(assistantThinkingLine("let me think about this\nmultiline reasoning"));
+		await appendAndWait(assistantToolCallLine("bash"));
+		await appendAndWait(toolResultLine(false, "done"));
+		await appendAndWait(assistantTextLine("hello"));
 
-		assertEq(calls.length, 2, "two messages dispatched");
-		assertEq(calls[0].channel, "chat-A", "destination correct");
-		assertEq(calls[0].text, "hello", "assistant text formatted as-is");
-		assertEq(calls[1].text, "[alex] hi", "user text formatted with name prefix");
+		assertEq(calls.length, 5, "all 5 message types dispatched in mirror mode");
+		assertEq(calls[0].text, "[alex] hi", "user");
+		assertEq(calls[1].text, "💭 let me think about this", "thinking (first line)");
+		assertEq(calls[2].text, "→ bash", "tool call");
+		assertEq(calls[3].text, "✓", "tool result success");
+		assertEq(calls[4].text, "hello", "assistant text");
 		pump.stop();
 		emitter.stop();
 	}
 
 	// ----------------------------------------------------------------
-	console.log("\nfilter: roles=[assistant] excludes user messages");
+	console.log("\nmode=responses: only assistant text dispatched");
 	{
 		const { emitter, calls, pump } = setup();
 		writeSubs([
-			{
-				id: "s1",
-				adapter: "telegram",
-				destination: "chat-A",
-				filter: { roles: ["assistant"] },
-			},
+			{ id: "s1", adapter: "telegram", destination: "chat-A", mode: "responses" },
 		]);
 		pump.start();
 
 		await appendAndWait(userLine("web", "alex", "hi"));
+		await appendAndWait(assistantThinkingLine("thinking..."));
+		await appendAndWait(assistantToolCallLine("bash"));
 		await appendAndWait(assistantTextLine("hello"));
 
-		assertEq(calls.length, 1, "only assistant dispatched");
+		assertEq(calls.length, 1, "only assistant text dispatched");
 		assertEq(calls[0].text, "hello", "got assistant text");
 		pump.stop();
 		emitter.stop();
 	}
 
 	// ----------------------------------------------------------------
-	console.log("\nfilter: contentTypes=[text] excludes toolCall");
-	{
-		const { emitter, calls, pump } = setup();
-		writeSubs([
-			{
-				id: "s1",
-				adapter: "telegram",
-				destination: "chat-A",
-				filter: { contentTypes: ["text"] },
-			},
-		]);
-		pump.start();
-
-		await appendAndWait(assistantToolCallLine("bash"));
-		await appendAndWait(assistantTextLine("done"));
-
-		assertEq(calls.length, 1, "only text dispatched");
-		assertEq(calls[0].text, "done", "got text content");
-		pump.stop();
-		emitter.stop();
-	}
-
-	// ----------------------------------------------------------------
-	console.log("\nformatter: each content type formats correctly");
+	console.log("\nformatter: error tool result shows first line");
 	{
 		const { emitter, calls, pump } = setup();
 		writeSubs([{ id: "s1", adapter: "telegram", destination: "chat-A" }]);
 		pump.start();
 
-		await appendAndWait(assistantToolCallLine("bash"));
-		await appendAndWait(toolResultLine(false, "ok output"));
-		await appendAndWait(toolResultLine(true, "permission denied\nstack..."));
+		await appendAndWait(toolResultLine(true, "permission denied\nstack trace..."));
 
-		assertEq(calls.length, 3, "three messages");
-		assertEq(calls[0].text, "→ bash", "tool call → arrow + name");
-		assertEq(calls[1].text, "✓", "successful tool result → check");
-		assertEq(calls[2].text, "❌ permission denied", "error tool result → first line");
+		assertEq(calls.length, 1, "one message");
+		assertEq(calls[0].text, "❌ permission denied", "error → first line");
 		pump.stop();
 		emitter.stop();
 	}
@@ -250,13 +228,11 @@ async function run(): Promise<void> {
 		writeSubs([{ id: "s1", adapter: "telegram", destination: "telegram:123" }]);
 		pump.start();
 
-		// User message FROM the destination channel — should NOT be mirrored back
-		await appendAndWait(userLine("telegram:123", "alex", "hi"));
-		// User message from a different channel — should be mirrored
-		await appendAndWait(userLine("web", "alex", "hello"));
+		await appendAndWait(userLine("telegram:123", "alex", "hi from dest"));
+		await appendAndWait(userLine("web", "alex", "hello from elsewhere"));
 
 		assertEq(calls.length, 1, "only the non-destination message dispatched");
-		assertEq(calls[0].text, "[alex] hello", "from web channel");
+		assertEq(calls[0].text, "[alex] hello from elsewhere", "from web");
 		pump.stop();
 		emitter.stop();
 	}
@@ -264,22 +240,21 @@ async function run(): Promise<void> {
 	// ----------------------------------------------------------------
 	console.log("\nrate limiter: burst then coalesce");
 	{
-		const { emitter, calls, pump } = setup();
+		// Use real-ish defaults: burst=3, but refill shortened to 500ms for fast tests.
+		const { emitter, calls, pump } = setup({ bucketBurst: 3, refillIntervalMs: 500 });
 		writeSubs([{ id: "s1", adapter: "telegram", destination: "chat-A" }]);
 		pump.start();
 
-		// Burst is 3 — fire 6 quickly. First 3 should pass, next 3 coalesce.
 		for (let i = 0; i < 6; i++) {
 			appendFileSync(CONTEXT_FILE, assistantTextLine("msg" + i) + "\n");
 		}
-		await sleep(300);
+		await sleep(200);
 
 		assertEq(calls.length, 3, "burst of 3 dispatched immediately");
 		assertEq(calls[0].text, "msg0", "first message");
 		assertEq(calls[2].text, "msg2", "third message");
 
-		// Wait for the coalesce flush (REFILL_INTERVAL_MS = 5000)
-		await sleep(5200);
+		await sleep(700);
 		assertEq(calls.length, 4, "coalesced overflow flushed as one message");
 		assertEq(calls[3].text, "+3 more", "coalesce message format");
 		pump.stop();
@@ -294,7 +269,6 @@ async function run(): Promise<void> {
 			{ id: "s1", adapter: "telegram", destination: "chat-A", enabled: false },
 		]);
 		pump.start();
-
 		await appendAndWait(assistantTextLine("hello"));
 		assertEq(calls.length, 0, "nothing dispatched when disabled");
 		pump.stop();
@@ -307,10 +281,8 @@ async function run(): Promise<void> {
 		const { emitter, calls, pump } = setup();
 		writeSubs([{ id: "s1", adapter: "telegram", destination: "chat-A" }]);
 		pump.start();
-
 		await appendAndWait("this is not json");
 		await appendAndWait(assistantTextLine("after garbage"));
-
 		assertEq(calls.length, 1, "garbage skipped, valid line dispatched");
 		assertEq(calls[0].text, "after garbage", "valid line content");
 		pump.stop();

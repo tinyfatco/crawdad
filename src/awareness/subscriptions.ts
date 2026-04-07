@@ -2,15 +2,21 @@
  * AwarenessSubscriptionPump — dumb tap on the awareness stream.
  *
  * Reads awareness/subscriptions.json from the workspace, watches it for
- * changes, subscribes to the AwarenessEmitter, and pushes filtered+formatted
- * lines to outbound platform adapters via postMessage.
+ * changes, subscribes to the AwarenessEmitter, and pushes formatted lines
+ * to outbound platform adapters via postMessage.
  *
  * Each subscription has a per-subscription token bucket (1 push / 5s, burst
  * 3). Overflow is coalesced into a "+N more" followup after the cooldown.
  *
- * Loop guard: a subscription's destination is auto-injected into its
- * excludeChannels filter so messages mirrored TO Telegram chat X aren't
- * mirrored back FROM Telegram chat X on the next reply.
+ * Loop guard: messages whose source channel matches the subscription's
+ * destination are dropped, so a Telegram mirror doesn't bounce its own
+ * pushes back on the next reply.
+ *
+ * Modes:
+ *   "mirror"    — push every message line (default). Same content the web
+ *                 awareness stream shows: user msgs, assistant text, thinking,
+ *                 tool calls, tool results, heartbeats, emails.
+ *   "responses" — push only assistant text. Quieter alternative.
  */
 
 import { existsSync, readFileSync, watch, type FSWatcher } from "fs";
@@ -28,18 +34,13 @@ import {
 	type ThinkingContent,
 } from "./parse.js";
 
-export interface SubscriptionFilter {
-	roles?: Array<"user" | "assistant" | "toolResult">;
-	contentTypes?: Array<"text" | "thinking" | "toolCall" | "toolResult">;
-	channels?: string[];
-	excludeChannels?: string[];
-}
+export type SubscriptionMode = "mirror" | "responses";
 
 export interface SubscriptionConfig {
 	id: string;
 	adapter: string;
 	destination: string;
-	filter?: SubscriptionFilter;
+	mode?: SubscriptionMode;
 	enabled?: boolean;
 }
 
@@ -50,8 +51,13 @@ interface BucketState {
 	flushTimer: ReturnType<typeof setTimeout> | null;
 }
 
-const REFILL_INTERVAL_MS = 5_000;
-const BUCKET_BURST = 3;
+const DEFAULT_REFILL_INTERVAL_MS = 5_000;
+const DEFAULT_BUCKET_BURST = 3;
+
+export interface PumpOptions {
+	refillIntervalMs?: number;
+	bucketBurst?: number;
+}
 
 export class AwarenessSubscriptionPump {
 	private workspaceDir: string;
@@ -63,12 +69,21 @@ export class AwarenessSubscriptionPump {
 	private listener: AwarenessLineListener | null = null;
 	private fileWatcher: FSWatcher | null = null;
 	private reloadDebounce: ReturnType<typeof setTimeout> | null = null;
+	private refillIntervalMs: number;
+	private bucketBurst: number;
 
-	constructor(workspaceDir: string, emitter: AwarenessEmitter, adapters: PlatformAdapter[]) {
+	constructor(
+		workspaceDir: string,
+		emitter: AwarenessEmitter,
+		adapters: PlatformAdapter[],
+		options: PumpOptions = {},
+	) {
 		this.workspaceDir = workspaceDir;
 		this.emitter = emitter;
 		this.adapters = new Map(adapters.map((a) => [a.name, a]));
 		this.configPath = resolve(workspaceDir, "awareness/subscriptions.json");
+		this.refillIntervalMs = options.refillIntervalMs ?? DEFAULT_REFILL_INTERVAL_MS;
+		this.bucketBurst = options.bucketBurst ?? DEFAULT_BUCKET_BURST;
 	}
 
 	start(): void {
@@ -123,7 +138,6 @@ export class AwarenessSubscriptionPump {
 
 	private watchConfig(): void {
 		try {
-			// Watch the parent dir so we catch creates/deletes too
 			const dir = resolve(this.workspaceDir, "awareness");
 			if (!existsSync(dir)) return;
 			this.fileWatcher = watch(dir, (_event, filename) => {
@@ -147,48 +161,27 @@ export class AwarenessSubscriptionPump {
 
 		for (const sub of this.subscriptions) {
 			if (sub.enabled === false) continue;
-			if (!this.matches(entry, sub)) continue;
-			const formatted = this.format(entry, sub);
+
+			// Loop guard: drop messages whose source channel is this sub's destination.
+			if (entry.channel && entry.channel === sub.destination) continue;
+
+			const mode = sub.mode || "mirror";
+			if (mode === "responses" && entry.role !== "assistant") continue;
+
+			const formatted = this.format(entry, mode);
 			if (!formatted) continue;
 			this.dispatch(sub, formatted);
 		}
 	}
 
-	matches(entry: AwarenessEntry, sub: SubscriptionConfig): boolean {
-		const filter = sub.filter || {};
-
-		if (filter.roles && filter.roles.length > 0) {
-			if (!entry.role || !filter.roles.includes(entry.role)) return false;
-		}
-
-		if (filter.channels && filter.channels.length > 0) {
-			if (!entry.channel || !filter.channels.includes(entry.channel)) return false;
-		}
-
-		// Loop guard: auto-exclude the subscription's own destination channel.
-		const excludes = new Set(filter.excludeChannels || []);
-		excludes.add(sub.destination);
-		if (entry.channel && excludes.has(entry.channel)) return false;
-
-		if (filter.contentTypes && filter.contentTypes.length > 0) {
-			if (!entry.content || !Array.isArray(entry.content)) return false;
-			const allowed = filter.contentTypes;
-			const hasMatchingType = entry.content.some((c) =>
-				(allowed as string[]).includes(c.type),
-			);
-			if (!hasMatchingType) return false;
-		}
-
-		return true;
-	}
-
-	format(entry: AwarenessEntry, sub: SubscriptionConfig): string | null {
+	format(entry: AwarenessEntry, mode: SubscriptionMode): string | null {
 		if (!entry.content || !Array.isArray(entry.content)) return null;
-		const allowedTypes = sub.filter?.contentTypes as string[] | undefined;
 
 		const parts: string[] = [];
 		for (const block of entry.content as ContentBlock[]) {
-			if (allowedTypes && !allowedTypes.includes(block.type)) continue;
+			if (mode === "responses") {
+				if (entry.role !== "assistant" || block.type !== "text") continue;
+			}
 			const piece = this.formatBlock(entry, block);
 			if (piece) parts.push(piece);
 		}
@@ -239,10 +232,8 @@ export class AwarenessSubscriptionPump {
 			return;
 		}
 
-		// No tokens — coalesce into the dropped counter
 		bucket.dropped += 1;
 		if (!bucket.flushTimer) {
-			const wait = REFILL_INTERVAL_MS;
 			bucket.flushTimer = setTimeout(() => {
 				bucket.flushTimer = null;
 				const dropped = bucket.dropped;
@@ -254,14 +245,14 @@ export class AwarenessSubscriptionPump {
 						this.send(sub, `+${dropped} more`);
 					}
 				}
-			}, wait);
+			}, this.refillIntervalMs);
 		}
 	}
 
 	private getBucket(id: string): BucketState {
 		let b = this.buckets.get(id);
 		if (!b) {
-			b = { tokens: BUCKET_BURST, lastRefill: Date.now(), dropped: 0, flushTimer: null };
+			b = { tokens: this.bucketBurst, lastRefill: Date.now(), dropped: 0, flushTimer: null };
 			this.buckets.set(id, b);
 		}
 		return b;
@@ -270,9 +261,9 @@ export class AwarenessSubscriptionPump {
 	private refill(bucket: BucketState): void {
 		const now = Date.now();
 		const elapsed = now - bucket.lastRefill;
-		if (elapsed >= REFILL_INTERVAL_MS) {
-			const add = Math.floor(elapsed / REFILL_INTERVAL_MS);
-			bucket.tokens = Math.min(BUCKET_BURST, bucket.tokens + add);
+		if (elapsed >= this.refillIntervalMs) {
+			const add = Math.floor(elapsed / this.refillIntervalMs);
+			bucket.tokens = Math.min(this.bucketBurst, bucket.tokens + add);
 			bucket.lastRefill = now;
 		}
 	}
