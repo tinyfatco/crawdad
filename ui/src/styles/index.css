@@ -1211,4 +1211,31 @@ html, body, #root {
   .resize-handle { display: none; }
   .awareness-sidebar { width: 100% !important; border-left: none; }
   .center-panel { display: none; }
+
+  /* Mobile input bar: more breathing room, bigger touch targets.
+     No font-size changes — those made it worse last time. */
+  .input-container {
+    gap: 0.5rem;
+    padding: 0.75rem 0.75rem 1rem;
+    align-items: center;
+  }
+  .input-bar textarea {
+    padding: 0.5rem 0;
+    min-height: 40px;
+  }
+  .send-button,
+  .control-button,
+  .mic-button,
+  .upload-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+  }
+  .send-button svg,
+  .control-button svg,
+  .mic-button svg,
+  .upload-btn svg {
+    width: 20px;
+    height: 20px;
+  }
 }
