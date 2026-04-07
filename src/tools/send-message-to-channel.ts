@@ -45,6 +45,7 @@ export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): Age
 		channel: Type.String({ description: "Channel ID to send to (e.g., Telegram chat ID, Slack channel ID, email-user@example.com)" }),
 		text: Type.String({ description: "Message text to send" }),
 		attachments: Type.Optional(Type.Array(Type.String(), { description: "File paths to attach (email only). Each path should be an absolute path to a file on disk." })),
+		subject: Type.Optional(Type.String({ description: "Subject line (email only — ignored for Telegram/Slack/Discord). If omitted for email, a generic default is used." })),
 	});
 
 	return {
@@ -55,13 +56,13 @@ export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): Age
 			"while staying focused on your current channel. " +
 			"The channel ID determines which platform the message goes to: " +
 			"numeric IDs → Telegram, C/D/G-prefixed → Slack, email-{address} → Email. " +
-			"For email, you can include file attachments (e.g., PDFs, images). " +
+			"For email, you can include file attachments (e.g., PDFs, images) and an optional subject line. " +
 			"IMPORTANT: You MUST send a message whenever a cross-channel message arrives while you are working. " +
 			"Never leave a cross-channel message unacknowledged.",
 		parameters: schema,
 		execute: async (
 			_toolCallId: string,
-			{ channel, text, attachments }: { label: string; channel: string; text: string; attachments?: string[] },
+			{ channel, text, attachments, subject }: { label: string; channel: string; text: string; attachments?: string[]; subject?: string },
 			signal?: AbortSignal,
 		) => {
 			if (signal?.aborted) {
@@ -83,7 +84,7 @@ export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): Age
 					filename: basename(filePath),
 				}));
 
-				const ts = await adapter.postMessage(channel, text, attachmentObjects);
+				const ts = await adapter.postMessage(channel, text, attachmentObjects, subject);
 				adapter.logBotResponse(channel, text, ts);
 
 				const attInfo = attachmentObjects?.length ? ` with ${attachmentObjects.length} attachment(s)` : "";

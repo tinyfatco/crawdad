@@ -217,7 +217,7 @@ Keep responses concise and professional. The user will receive one email with yo
 	// PlatformAdapter — message operations (mostly no-ops for email)
 	// ==========================================================================
 
-	async postMessage(channel: string, text: string, attachments?: Array<{ filePath: string; filename: string }>): Promise<string> {
+	async postMessage(channel: string, text: string, attachments?: Array<{ filePath: string; filename: string }>, subject?: string): Promise<string> {
 		// Cross-channel send: channel format is "email-{address}"
 		const emailMatch = channel.match(/^email-(.+)$/);
 		if (!emailMatch) {
@@ -229,7 +229,7 @@ Keep responses concise and professional. The user will receive one email with yo
 
 		const emailMetadata = {
 			to: toAddress,
-			subject: "Message from your agent",
+			subject: subject || "Message from your agent",
 			body: text,
 		};
 

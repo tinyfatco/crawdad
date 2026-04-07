@@ -123,7 +123,7 @@ export interface PlatformAdapter {
 
 	// -- Message operations --
 
-	postMessage(channel: string, text: string, attachments?: Array<{ filePath: string; filename: string }>): Promise<string>;
+	postMessage(channel: string, text: string, attachments?: Array<{ filePath: string; filename: string }>, subject?: string): Promise<string>;
 	updateMessage(channel: string, ts: string, text: string): Promise<void>;
 	deleteMessage(channel: string, ts: string): Promise<void>;
 	postInThread(channel: string, threadTs: string, text: string): Promise<string>;
