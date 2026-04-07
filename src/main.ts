@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
+import { copyFileSync, existsSync } from "fs";
 import { join, resolve } from "path";
 import { DiscordWebhookAdapter } from "./adapters/discord-webhook.js";
 import { EmailWebhookAdapter } from "./adapters/email-webhook.js";
 import { HeartbeatAdapter, HEARTBEAT_CHANNEL_ID } from "./adapters/heartbeat.js";
+import { TickAdapter } from "./adapters/tick.js";
 import { SlackSocketAdapter } from "./adapters/slack-socket.js";
 import { SlackWebhookAdapter } from "./adapters/slack-webhook.js";
 import { TelegramPollingAdapter } from "./adapters/telegram-polling.js";
@@ -27,6 +29,8 @@ import { ChannelStore } from "./store.js";
 import { createBrowserTools } from "./tools/browser/index.js";
 import { createMoveToChannelTool } from "./tools/move-to-channel.js";
 import { createSendMessageToChannelTool } from "./tools/send-message-to-channel.js";
+import { createTuneInTool } from "./tools/tune-in.js";
+import { createTuneOutTool } from "./tools/tune-out.js";
 import { createYieldNoActionTool } from "./tools/yield-no-action.js";
 
 // ============================================================================
@@ -464,6 +468,30 @@ adapters.push(heartbeatAdapter);
 
 const AWARENESS_DIR = "awareness";
 
+// Always create tick adapter — implicit presence loop (tune_in / tune_out).
+// Must come after AWARENESS_DIR because it needs awarenessDir for presence transitions.
+const tickAdapter = new TickAdapter({
+	workingDir,
+	awarenessDir: join(workingDir, AWARENESS_DIR),
+}) as AdapterWithHandler;
+adapters.push(tickAdapter);
+
+// Seed TICK.md template on first boot if it doesn't exist (agent-editable after).
+{
+	const tickFile = join(workingDir, "TICK.md");
+	if (!existsSync(tickFile)) {
+		const templatePath = join(import.meta.dirname || __dirname, "templates", "TICK.md");
+		try {
+			if (existsSync(templatePath)) {
+				copyFileSync(templatePath, tickFile);
+				log.logInfo(`Seeded TICK.md from template`);
+			}
+		} catch (err) {
+			log.logWarning("Failed to seed TICK.md", err instanceof Error ? err.message : String(err));
+		}
+	}
+}
+
 interface Awareness {
 	running: boolean;
 	/** Timestamp of last substantive activity during a run (LLM token, tool call, etc.) */
@@ -486,6 +514,16 @@ function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstruc
 		const extraTools = [
 			createSendMessageToChannelTool(adapters),
 			createYieldNoActionTool(),
+			createTuneInTool({
+				workingDir,
+				awarenessDir,
+				onTuneIn: () => (tickAdapter as unknown as TickAdapter).startTicking(),
+			}),
+			createTuneOutTool({
+				workingDir,
+				awarenessDir,
+				onTuneOut: () => (tickAdapter as unknown as TickAdapter).stopTicking(),
+			}),
 			...createBrowserTools(),
 			createMoveToChannelTool(adapters, (newChannelId: string) => {
 				for (const a of adapters) {
