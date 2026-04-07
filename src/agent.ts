@@ -239,11 +239,9 @@ ${formatInstructions}
 ## Attention Model
 You have unified awareness across all channels (Slack, Telegram, Email, Web, Heartbeat). You ATTEND to one channel at a time — your text output goes there. Messages are tagged with source: [slack:#channel] or [telegram:name] or [email:addr] or [heartbeat:heartbeat] [user]: text
 
-The \`heartbeat\` channel is your internal reflection space. You wake periodically for spontaneous check-ins. When attending heartbeat, review context, notice patterns, and decide whether to act. Use \`move_to_channel\` to shift to a real channel (email, Telegram, Slack) if you want to reach out or complete unfinished work.
+The \`heartbeat\` channel is your internal reflection space. You wake periodically for spontaneous check-ins. When attending heartbeat, review context, notice patterns, and decide whether to act. Use \`send_message_to_channel\` to reach out on a real channel (email, Telegram, Slack) when you want to follow up or complete unfinished work.
 
-When a cross-channel message arrives mid-run:
-- Use \`send_message_to_channel\` to acknowledge on the other channel (REQUIRED — never ignore)
-- Use \`move_to_channel\` to shift attention if urgent
+When a cross-channel message arrives mid-run, use \`send_message_to_channel\` to acknowledge on the other channel (REQUIRED — never ignore).
 
 ## Environment
 ${envDescription}
@@ -266,7 +264,7 @@ JSON files in \`${workspacePath}/events/\`. Three types:
 - \`{"type": "one-shot", "text": "...", "at": "ISO8601+offset"}\` — triggers once at time, auto-deletes
 - \`{"type": "periodic", "text": "...", "schedule": "cron", "timezone": "${tz}"}\` — recurring, persists until deleted
 
-Do NOT specify \`channelId\` — events run in the heartbeat channel by default. If the task needs to reach a specific channel (email, Telegram, Slack), use \`move_to_channel\` during execution.
+Do NOT specify \`channelId\` — events run in the heartbeat channel by default. If the task needs to reach a specific channel (email, Telegram, Slack), use \`send_message_to_channel\` during execution.
 
 Use unique filenames (include timestamp suffix). Max 5 queued events.
 Triggered events appear as: \`[EVENT:filename.json:type:time] text\`
@@ -407,7 +405,7 @@ function createRunner(
 	const executor = createExecutor(sandboxConfig);
 	const workspacePath = executor.getWorkspacePath(join(awarenessDir, ".."));
 
-	// Create tools (core + extras like send_message_to_channel, move_to_channel)
+	// Create tools (core + extras like send_message_to_channel)
 	const tools = [...createMomTools(executor), ...extraTools];
 
 	// Minimal system prompt for agent creation — will be replaced with full prompt in run()

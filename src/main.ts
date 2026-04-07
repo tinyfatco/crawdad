@@ -26,8 +26,6 @@ import { Gateway } from "./gateway.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
-import { createBrowserTools } from "./tools/browser/index.js";
-import { createMoveToChannelTool } from "./tools/move-to-channel.js";
 import { createSendMessageToChannelTool } from "./tools/send-message-to-channel.js";
 import { createTuneInTool } from "./tools/tune-in.js";
 import { createTuneOutTool } from "./tools/tune-out.js";
@@ -523,20 +521,6 @@ function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstruc
 				workingDir,
 				awarenessDir,
 				onTuneOut: () => (tickAdapter as unknown as TickAdapter).stopTicking(),
-			}),
-			...createBrowserTools(),
-			createMoveToChannelTool(adapters, (newChannelId: string) => {
-				for (const a of adapters) {
-					const channel = a.getChannel(newChannelId);
-					if (channel) {
-						if (awareness) {
-							awareness.displayChannelId = newChannelId;
-							awareness.displayAdapter = a;
-						}
-						return getChannelDisplayName(newChannelId, adapters);
-					}
-				}
-				return undefined;
 			}),
 		];
 
@@ -1164,7 +1148,7 @@ To change these, edit \`settings.json\` directly.
 
 - Keep this file short — it's included in every heartbeat prompt.
 - If you clear this file (leave it empty), heartbeats will be skipped entirely.
-- Use \`move_to_channel\` to reach out on email/Telegram/Slack if something needs attention.
+- Use \`send_message_to_channel\` to reach out on email/Telegram/Slack if something needs attention.
 - Use \`yield_no_action\` if nothing needs doing — the quiet is recorded.
 - You can update this file yourself to evolve your own periodic behavior.
 `, "utf-8");
