@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import type { Socket } from "net";
-import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from "fs";
 import { join, extname, resolve, normalize, dirname } from "path";
 import * as log from "./log.js";
+import { AwarenessEmitter, type AwarenessLineListener } from "./awareness/emitter.js";
 
 /**
  * Gateway — single HTTP server with path-based routing.
@@ -42,10 +43,10 @@ export class Gateway {
 	private server: Server | null = null;
 	private uiDir: string | null = null;
 	private workspaceDir: string | null = null;
-	/** Connected SSE clients for /awareness/stream */
-	private awarenessClients = new Set<ServerResponse>();
-	private awarenessWatcher: ReturnType<typeof setInterval> | null = null;
-	private awarenessFileSize = 0;
+	/** Connected SSE clients for /awareness/stream — mapped to their emitter listener */
+	private awarenessClients = new Map<ServerResponse, AwarenessLineListener>();
+	/** Lazily created on first use; one per workspace */
+	private awarenessEmitter: AwarenessEmitter | null = null;
 
 	constructor(options: GatewayOptions = {}) {
 		if (options.uiDir && existsSync(options.uiDir)) {
@@ -412,15 +413,27 @@ export class Gateway {
 		res.end(JSON.stringify({ lines: slice, total, offset: startIndex }));
 	}
 
+	/**
+	 * Get (or lazily create) the AwarenessEmitter for this workspace.
+	 * Returns null if no workspace is configured.
+	 */
+	getAwarenessEmitter(): AwarenessEmitter | null {
+		if (!this.workspaceDir) return null;
+		if (!this.awarenessEmitter) {
+			const contextFile = resolve(this.workspaceDir, "awareness/context.jsonl");
+			this.awarenessEmitter = new AwarenessEmitter(contextFile);
+		}
+		return this.awarenessEmitter;
+	}
+
 	/** Handle GET /awareness/stream — SSE endpoint that tails context.jsonl */
 	private handleAwarenessStream(_req: IncomingMessage, res: ServerResponse): void {
-		if (!this.workspaceDir) {
+		const emitter = this.getAwarenessEmitter();
+		if (!emitter) {
 			res.writeHead(500);
 			res.end("No workspace configured");
 			return;
 		}
-
-		const contextFile = resolve(this.workspaceDir, "awareness/context.jsonl");
 
 		// SSE headers
 		res.writeHead(200, {
@@ -429,24 +442,12 @@ export class Gateway {
 			"Connection": "keep-alive",
 		});
 
-		// Skip backlog — client fetches recent entries via /awareness/backlog instead.
-		// Just record the current file size so the watcher only sends new lines.
-		let currentSize = 0;
-		try {
-			const stat = statSync(contextFile);
-			currentSize = stat.size;
-		} catch {
-			// File doesn't exist yet
-		}
-
-		// Register client
-		this.awarenessClients.add(res);
-
-		// Start the shared file watcher if not already running
-		if (!this.awarenessWatcher) {
-			this.awarenessFileSize = currentSize;
-			this.startAwarenessWatcher(contextFile);
-		}
+		// Subscribe this client to new lines from the emitter
+		const listener: AwarenessLineListener = (line) => {
+			try { res.write(`data: ${line}\n\n`); } catch { /* client gone, cleanup on close */ }
+		};
+		emitter.on(listener);
+		this.awarenessClients.set(res, listener);
 
 		// Heartbeat to keep connection alive
 		const heartbeat = setInterval(() => {
@@ -456,43 +457,10 @@ export class Gateway {
 		// Clean up on disconnect
 		res.on("close", () => {
 			clearInterval(heartbeat);
+			const l = this.awarenessClients.get(res);
+			if (l) emitter.off(l);
 			this.awarenessClients.delete(res);
-			if (this.awarenessClients.size === 0 && this.awarenessWatcher) {
-				clearInterval(this.awarenessWatcher);
-				this.awarenessWatcher = null;
-			}
 		});
-	}
-
-	/** Poll context.jsonl for new bytes and push to all connected SSE clients */
-	private startAwarenessWatcher(contextFile: string): void {
-		this.awarenessWatcher = setInterval(() => {
-			try {
-				const stat = statSync(contextFile);
-				const newSize = stat.size;
-				if (newSize <= this.awarenessFileSize) return;
-
-				// Read only the new bytes
-				const fd = openSync(contextFile, "r");
-				const buf = Buffer.alloc(newSize - this.awarenessFileSize);
-				readSync(fd, buf, 0, buf.length, this.awarenessFileSize);
-				closeSync(fd);
-
-				this.awarenessFileSize = newSize;
-
-				const newContent = buf.toString("utf-8");
-				const lines = newContent.split("\n").filter(Boolean);
-
-				for (const line of lines) {
-					const event = `data: ${line}\n\n`;
-					for (const client of this.awarenessClients) {
-						try { client.write(event); } catch { /* client gone, will be cleaned up */ }
-					}
-				}
-			} catch {
-				// File gone or read error — skip this tick
-			}
-		}, 500);
 	}
 
 	/** Start listening on the given port */

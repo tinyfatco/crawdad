@@ -837,6 +837,17 @@ await Promise.all(adapters.map(async (adapter, i) => {
 }));
 log.logInfo(`[perf] all adapters started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
+// Awareness subscription pump — dumb tap on context.jsonl that mirrors
+// filtered events to outbound adapters per workspace/awareness/subscriptions.json
+{
+	const { AwarenessSubscriptionPump } = await import("./awareness/subscriptions.js");
+	const emitter = gateway.getAwarenessEmitter();
+	if (emitter) {
+		const pump = new AwarenessSubscriptionPump(workingDir, emitter, adapters);
+		pump.start();
+	}
+}
+
 // Stuck-run watchdog — detect runs with no activity for 5 minutes and force-release
 const WATCHDOG_INTERVAL_MS = 60_000;
 const WATCHDOG_STALE_THRESHOLD_MS = 5 * 60 * 1000;

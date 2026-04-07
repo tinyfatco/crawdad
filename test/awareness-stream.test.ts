@@ -44,24 +44,18 @@ async function run() {
   const gw = new Gateway({ workspaceDir: TEMP_DIR });
   await gw.start(PORT);
 
-  console.log("Test 1: Backlog delivery");
+  // The /awareness/stream endpoint is live-only (no backlog replay) — backlog
+  // is fetched via /awareness/backlog. Verify a freshly appended line arrives
+  // on the SSE stream.
+  console.log("Test: Live update delivery");
 
-  // Connect to SSE and collect events
-  const events = await collectEvents(2, 3000);
-  assert(events.length >= 2, `got ${events.length} backlog events (expected ≥2)`);
-  assert(events[0].includes('"s1"'), "first event is session s1");
-  assert(events[1].includes('"m1"'), "second event is message m1");
-
-  console.log("\nTest 2: Live update delivery");
-
-  // Start a new SSE connection, skip backlog, then append a new line
-  const livePromise = collectEvents(3, 5000); // 2 backlog + 1 new
-  await sleep(200); // Let connection establish and receive backlog
+  const livePromise = collectEvents(1, 5000);
+  await sleep(300); // Let SSE connection establish and snapshot file size
   appendFileSync(CONTEXT_FILE, line3 + "\n");
   const liveEvents = await livePromise;
-  assert(liveEvents.length >= 3, `got ${liveEvents.length} total events (expected ≥3)`);
+  assert(liveEvents.length >= 1, `got ${liveEvents.length} live events (expected ≥1)`);
   const lastEvent = liveEvents[liveEvents.length - 1];
-  assert(lastEvent.includes('"m2"'), "live event contains message m2");
+  assert(!!lastEvent && lastEvent.includes('"m2"'), "live event contains message m2");
 
   // Cleanup
   await gw.stop();
