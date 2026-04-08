@@ -522,7 +522,7 @@ function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstruc
 		const awarenessDir = join(workingDir, AWARENESS_DIR);
 		const extraTools = [
 			createSendMessageToChannelTool(adapters),
-			createListChannelsTool(adapters),
+			createListChannelsTool(workingDir),
 			createYieldNoActionTool(),
 			createTuneInTool({
 				workingDir,

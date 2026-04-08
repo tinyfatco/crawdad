@@ -18,7 +18,7 @@ import { z } from "zod";
 import * as log from "../log.js";
 import { appendAwarenessLine } from "../presence.js";
 import type { ChannelStore } from "../store.js";
-import { collectChannels, formatChannelTable } from "../tools/list-channels.js";
+import { collectChannelsFromLog, formatChannelTable } from "../tools/list-channels.js";
 import { resolveAdapter } from "../tools/send-message-to-channel.js";
 import type {
 	ChannelInfo,
@@ -392,19 +392,22 @@ export class McpAdapter implements PlatformAdapter {
 		);
 
 		// ── list_channels ────────────────────────────────────────────────
-		// Discovery helper for MCP clients. Returns every channel across all
-		// connected adapters so callers know what to pass to send_message_to_channel.
+		// Discovery helper for MCP clients. Reads log.jsonl so it covers any
+		// channel the agent has ever interacted with, regardless of adapter or
+		// container lifetime.
 		server.registerTool(
 			"list_channels",
 			{
 				description:
-					"List every channel currently connected across all of the agent's platform adapters. " +
-					"Returns a markdown table of adapter, channel ID, and channel name. Use the channel " +
-					"IDs returned here as input to send_message_to_channel.",
+					"List every channel the agent has ever sent or received a message on. Reads from " +
+					"log.jsonl so it covers Telegram, Slack, Email, Discord, etc. and survives " +
+					"container restarts. Returns a markdown table of adapter, channel ID, name, " +
+					"and last-seen timestamp. Use the channel IDs returned here as input to " +
+					"send_message_to_channel.",
 				inputSchema: {},
 			},
 			async () => {
-				const channels = collectChannels(this.peerAdapters);
+				const channels = collectChannelsFromLog(this.workingDir);
 				log.logInfo(`[mcp] list_channels: ${channels.length} channels`);
 				this.logToFile({
 					date: new Date().toISOString(),
