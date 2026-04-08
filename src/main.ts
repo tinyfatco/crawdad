@@ -784,8 +784,10 @@ gateway.registerUpgrade("/terminal", handleTerminalUpgrade(workingDir));
 
 // Operator intake — headless inbound routes for the Agency MCP. Crawdad-cf
 // authenticates the operator upstream; the container trusts the worker.
+// `read` is GET (paginated awareness backlog); the other three are POST.
 // Routes are marked ready immediately since the adapter has no async start.
-for (const path of ["/operator/read", "/operator/message", "/operator/assign", "/operator/configure"]) {
+gateway.registerGet("/operator/read", (req, res) => operatorAdapter.dispatch!(req, res));
+for (const path of ["/operator/message", "/operator/assign", "/operator/configure"]) {
 	gateway.register(path, (req, res) => operatorAdapter.dispatch!(req, res));
 	gateway.markReady(path);
 }
