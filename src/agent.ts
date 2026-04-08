@@ -509,6 +509,28 @@ function createRunner(
 
 	const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 
+	// FAT-279 — wrap settingsManager so getCompactionSettings() derives
+	// reserveTokens fresh from the current model's contextWindow and the
+	// configured thresholdPercent. A single percentage knob works across
+	// models with different window sizes (MiniMax 197k, Anthropic 200k, etc).
+	const compactionSettingsProxy = new Proxy(settingsManager, {
+		get(target, prop, receiver) {
+			if (prop === "getCompactionSettings") {
+				return () => {
+					const base = target.getCompactionSettings();
+					const currentModel = agent.state.model;
+					const contextWindow = currentModel?.contextWindow ?? 0;
+					if (contextWindow > 0 && base.thresholdPercent > 0 && base.thresholdPercent < 1) {
+						const derived = Math.floor(contextWindow * (1 - base.thresholdPercent));
+						return { ...base, reserveTokens: derived };
+					}
+					return base;
+				};
+			}
+			return Reflect.get(target, prop, receiver);
+		},
+	});
+
 	// Session created lazily on first run
 	let session: AgentSession | null = null;
 	let unsubscribeSession: (() => void) | null = null;
@@ -517,7 +539,7 @@ function createRunner(
 			session = new AgentSession({
 				agent,
 				sessionManager: getSessionManager(),
-				settingsManager: settingsManager as any,
+				settingsManager: compactionSettingsProxy as any,
 				cwd: process.cwd(),
 				modelRegistry,
 				resourceLoader,
@@ -708,6 +730,11 @@ function createRunner(
 				log.logInfo(`Auto-compaction complete: ${compEvent.result.tokensBefore} tokens compacted`);
 			} else if (compEvent.aborted) {
 				log.logInfo("Auto-compaction aborted");
+			} else {
+				// FAT-279 — surface silent no-ops so ping-pong cases are visible.
+				// result: undefined with no abort means prepareCompaction returned null
+				// (nothing to summarize) or model/apiKey was missing.
+				log.logInfo(`Auto-compaction no-op: ${compEvent.errorMessage || "nothing to compact or missing model/key"}`);
 			}
 		} else if (event.type === "auto_retry_start") {
 			const retryEvent = event as any;
