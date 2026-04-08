@@ -18,7 +18,7 @@ import type { PlatformAdapter } from "../adapters/types.js";
 import * as log from "../log.js";
 
 /** Resolve which adapter can handle a given channel ID */
-function resolveAdapter(channel: string, adapters: PlatformAdapter[]): PlatformAdapter | undefined {
+export function resolveAdapter(channel: string, adapters: PlatformAdapter[]): PlatformAdapter | undefined {
 	// Telegram: numeric (positive or negative)
 	if (/^-?\d+$/.test(channel)) {
 		return adapters.find((a) => a.name === "telegram");

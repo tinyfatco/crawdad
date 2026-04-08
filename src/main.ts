@@ -26,6 +26,7 @@ import { Gateway } from "./gateway.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
+import { createListChannelsTool } from "./tools/list-channels.js";
 import { createSendMessageToChannelTool } from "./tools/send-message-to-channel.js";
 import { createTuneInTool } from "./tools/tune-in.js";
 import { createTuneOutTool } from "./tools/tune-out.js";
@@ -474,6 +475,16 @@ const tickAdapter = new TickAdapter({
 }) as AdapterWithHandler;
 adapters.push(tickAdapter);
 
+// Inject the full adapter list into the MCP adapter so its send_message_to_channel
+// and list_channels tools can route through peer adapters. Done after all adapters
+// are constructed to close the circular dependency.
+{
+	const mcpAdapter = adapters.find((a) => a.name === "mcp") as McpAdapter | undefined;
+	if (mcpAdapter) {
+		mcpAdapter.setAdapters(adapters, join(workingDir, "awareness"));
+	}
+}
+
 // Seed TICK.md template on first boot if it doesn't exist (agent-editable after).
 {
 	const tickFile = join(workingDir, "TICK.md");
@@ -511,6 +522,7 @@ function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstruc
 		const awarenessDir = join(workingDir, AWARENESS_DIR);
 		const extraTools = [
 			createSendMessageToChannelTool(adapters),
+			createListChannelsTool(adapters),
 			createYieldNoActionTool(),
 			createTuneInTool({
 				workingDir,

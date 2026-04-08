@@ -11,12 +11,15 @@
 import { exec as execCb } from "child_process";
 import { appendFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
-import { join } from "path";
+import { basename, join } from "path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import * as log from "../log.js";
+import { appendAwarenessLine } from "../presence.js";
 import type { ChannelStore } from "../store.js";
+import { collectChannels, formatChannelTable } from "../tools/list-channels.js";
+import { resolveAdapter } from "../tools/send-message-to-channel.js";
 import type {
 	ChannelInfo,
 	MomContext,
@@ -37,6 +40,8 @@ export class McpAdapter implements PlatformAdapter {
 
 	private workingDir: string;
 	private handler!: MomHandler;
+	private peerAdapters: PlatformAdapter[] = [];
+	private awarenessDir?: string;
 
 	constructor(config: McpAdapterConfig) {
 		this.workingDir = config.workingDir;
@@ -44,6 +49,16 @@ export class McpAdapter implements PlatformAdapter {
 
 	setHandler(handler: MomHandler): void {
 		this.handler = handler;
+	}
+
+	/**
+	 * Inject the full adapter list and awareness dir after construction.
+	 * Called from main.ts once all adapters are built. Lets MCP tools route
+	 * sends through other adapters and append to the agent's awareness stream.
+	 */
+	setAdapters(adapters: PlatformAdapter[], awarenessDir: string): void {
+		this.peerAdapters = adapters;
+		this.awarenessDir = awarenessDir;
 	}
 
 	async start(): Promise<void> {
@@ -288,6 +303,118 @@ export class McpAdapter implements PlatformAdapter {
 
 				this.logToFile({ date: new Date().toISOString(), channel: "mcp", type: "tool_call", tool: "edit", path, success: true });
 				return { content: [{ type: "text" as const, text: `Replaced ${old_text.length} chars with ${new_text.length} chars in ${path}` }] };
+			},
+		);
+
+		// ── send_message_to_channel ──────────────────────────────────────
+		// Lets the MCP client send a message on any of the agent's connected
+		// channels (Telegram, Slack, Email, Discord) using the agent's bot
+		// credentials. Appears in the agent's awareness stream as a system
+		// notification but does NOT trigger a runner wake.
+		server.registerTool(
+			"send_message_to_channel",
+			{
+				description:
+					"Send a message on the agent's behalf to one of its connected channels " +
+					"(Telegram, Slack, Email, Discord). Channel ID determines routing: numeric → Telegram, " +
+					"C/D/G prefix → Slack, email-{address} → Email. The send appears in the agent's " +
+					"awareness stream but does NOT trigger a run. Use list_channels to discover valid IDs.",
+				inputSchema: {
+					channel: z.string().describe("Channel ID (numeric for Telegram, C/D/G-prefixed for Slack, email-{addr} for Email)"),
+					text: z.string().describe("Message text to send"),
+					subject: z.string().optional().describe("Subject line (email only)"),
+					attachments: z.array(z.string()).optional().describe("Absolute file paths to attach (email only)"),
+				},
+			},
+			async ({ channel, text, subject, attachments }: { channel: string; text: string; subject?: string; attachments?: string[] }) => {
+				log.logInfo(`[mcp] send_message_to_channel: ${channel} (${text.length} chars)`);
+
+				const adapter = resolveAdapter(channel, this.peerAdapters);
+				if (!adapter) {
+					return {
+						content: [{ type: "text" as const, text: `No adapter found for channel "${channel}". Valid patterns: numeric (Telegram), C/D/G prefix (Slack), email-{address} (Email).` }],
+						isError: true,
+					};
+				}
+
+				try {
+					const attachmentObjects = attachments?.map((filePath) => ({
+						filePath,
+						filename: basename(filePath),
+					}));
+
+					const ts = await adapter.postMessage(channel, text, attachmentObjects, subject);
+					adapter.logBotResponse(channel, text, ts);
+
+					// Append to awareness so the agent sees it on its next run.
+					// Does not enqueue a MomEvent — no runner wake.
+					if (this.awarenessDir) {
+						const preview = text.length > 200 ? `${text.slice(0, 200)}…` : text;
+						appendAwarenessLine(
+							this.awarenessDir,
+							`[mcp] sent to ${adapter.name}:${channel}: ${preview}`,
+						);
+					}
+
+					this.logToFile({
+						date: new Date().toISOString(),
+						channel: "mcp",
+						type: "tool_call",
+						tool: "send_message_to_channel",
+						target_adapter: adapter.name,
+						target_channel: channel,
+						success: true,
+					});
+
+					const attInfo = attachmentObjects?.length ? ` with ${attachmentObjects.length} attachment(s)` : "";
+					return {
+						content: [{ type: "text" as const, text: `Sent to ${adapter.name}:${channel}${attInfo} (ts=${ts})` }],
+					};
+				} catch (err) {
+					const errMsg = err instanceof Error ? err.message : String(err);
+					log.logWarning(`[mcp] send_message_to_channel failed for ${adapter.name}:${channel}`, errMsg);
+					this.logToFile({
+						date: new Date().toISOString(),
+						channel: "mcp",
+						type: "tool_call",
+						tool: "send_message_to_channel",
+						target_adapter: adapter.name,
+						target_channel: channel,
+						success: false,
+						error: errMsg,
+					});
+					return {
+						content: [{ type: "text" as const, text: `Failed to send: ${errMsg}` }],
+						isError: true,
+					};
+				}
+			},
+		);
+
+		// ── list_channels ────────────────────────────────────────────────
+		// Discovery helper for MCP clients. Returns every channel across all
+		// connected adapters so callers know what to pass to send_message_to_channel.
+		server.registerTool(
+			"list_channels",
+			{
+				description:
+					"List every channel currently connected across all of the agent's platform adapters. " +
+					"Returns a markdown table of adapter, channel ID, and channel name. Use the channel " +
+					"IDs returned here as input to send_message_to_channel.",
+				inputSchema: {},
+			},
+			async () => {
+				const channels = collectChannels(this.peerAdapters);
+				log.logInfo(`[mcp] list_channels: ${channels.length} channels`);
+				this.logToFile({
+					date: new Date().toISOString(),
+					channel: "mcp",
+					type: "tool_call",
+					tool: "list_channels",
+					count: channels.length,
+					success: true,
+				});
+				return { content: [{ type: "text" as const, text: formatChannelTable(channels) }] };
 			},
 		);
 	}
