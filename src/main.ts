@@ -5,6 +5,7 @@ import { join, resolve } from "path";
 import { DiscordWebhookAdapter } from "./adapters/discord-webhook.js";
 import { EmailWebhookAdapter } from "./adapters/email-webhook.js";
 import { HeartbeatAdapter, HEARTBEAT_CHANNEL_ID } from "./adapters/heartbeat.js";
+import { OperatorAdapter } from "./adapters/operator.js";
 import { TickAdapter } from "./adapters/tick.js";
 import { SlackSocketAdapter } from "./adapters/slack-socket.js";
 import { SlackWebhookAdapter } from "./adapters/slack-webhook.js";
@@ -461,6 +462,12 @@ const adapters: AdapterWithHandler[] = parsedArgs.adapters.map(createAdapter);
 const heartbeatAdapter = new HeartbeatAdapter({ workingDir }) as AdapterWithHandler;
 adapters.push(heartbeatAdapter);
 
+// Always create operator adapter — headless inbound surface for the Agency
+// MCP. Crawdad-cf worker proxies authenticated operator requests to
+// /operator/* routes on the container gateway. No outbound path.
+const operatorAdapter = new OperatorAdapter({ workingDir }) as AdapterWithHandler;
+adapters.push(operatorAdapter);
+
 // ============================================================================
 // Awareness — single unified state for the agent
 // ============================================================================
@@ -774,6 +781,14 @@ gateway.register("/ambient/evaluate", async (req, res) => {
 // When crawdad-cf is in front, it intercepts /agents/{id}/terminal at the Worker
 // level (sandbox.terminal()) so this handler never fires.
 gateway.registerUpgrade("/terminal", handleTerminalUpgrade(workingDir));
+
+// Operator intake — headless inbound routes for the Agency MCP. Crawdad-cf
+// authenticates the operator upstream; the container trusts the worker.
+// Routes are marked ready immediately since the adapter has no async start.
+for (const path of ["/operator/read", "/operator/message", "/operator/assign", "/operator/configure"]) {
+	gateway.register(path, (req, res) => operatorAdapter.dispatch!(req, res));
+	gateway.markReady(path);
+}
 
 await gateway.start(parsedArgs.port);
 gateway.markReady("/ambient/evaluate");

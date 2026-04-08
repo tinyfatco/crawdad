@@ -127,6 +127,32 @@ function hasBootstrap(workspaceDir: string): boolean {
  * In onboarding mode (BOOTSTRAP.md exists), returns just the bootstrap content.
  * In normal mode, returns all workspace files.
  */
+/**
+ * FAT-275 — read thinking_level from settings.json.
+ *
+ * Returns "off" when the setting is absent or unreadable, preserving the
+ * pre-FAT-275 default. Accepts the value as a loose string and lets the
+ * Agent state enforce its own union — upstream pi-ai accepts
+ * minimal|low|medium|high|xhigh, and the troublemaker runner has
+ * historically passed "off" without complaint.
+ */
+function resolveThinkingLevel(workspaceDir: string): any {
+	try {
+		const settingsPath = join(workspaceDir, "settings.json");
+		if (!existsSync(settingsPath)) return "off";
+		const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+			thinking_level?: string;
+		};
+		const level = settings.thinking_level;
+		if (!level) return "off";
+		const allowed = ["off", "minimal", "low", "medium", "high", "xhigh"];
+		if (allowed.includes(level)) return level;
+		return "off";
+	} catch {
+		return "off";
+	}
+}
+
 function getWorkspaceContext(workspaceDir: string): string {
 	if (hasBootstrap(workspaceDir)) {
 		const bootstrap = readWorkspaceFile(workspaceDir, "BOOTSTRAP.md");
@@ -150,6 +176,11 @@ function getWorkspaceContext(workspaceDir: string): string {
 	const memory = readWorkspaceFile(workspaceDir, "MEMORY.md");
 	if (memory) sections.push(`Memory:\n${memory}`);
 	else sections.push("Memory:\n(no working memory yet)");
+
+	// FAT-271 — operator-assigned brief. Re-read every turn so a fresh
+	// assignment is picked up without rebuilding the runner.
+	const brief = readWorkspaceFile(workspaceDir, "BRIEF.md");
+	if (brief) sections.push(`Current Brief (assigned by operator):\n${brief}`);
 
 	const recent = getRecentDailyMemory(workspaceDir);
 	if (recent) sections.push(`Recent:\n${recent}`);
@@ -237,9 +268,16 @@ function buildSystemPrompt(
 ${formatInstructions}
 
 ## Attention Model
-You have unified awareness across all channels (Slack, Telegram, Email, Web, Heartbeat). You ATTEND to one channel at a time — your text output goes there. Messages are tagged with source: [slack:#channel] or [telegram:name] or [email:addr] or [heartbeat:heartbeat] [user]: text
+You have unified awareness across all channels (Slack, Telegram, Email, Web, Heartbeat, Operator). You ATTEND to one channel at a time — your text output goes there. Messages are tagged with source: [slack:#channel] or [telegram:name] or [email:addr] or [heartbeat:heartbeat] or [operator:control] [user]: text
 
 The \`heartbeat\` channel is your internal reflection space. You wake periodically for spontaneous check-ins. When attending heartbeat, review context, notice patterns, and decide whether to act. Use \`send_message_to_channel\` to reach out on a real channel (email, Telegram, Slack) when you want to follow up or complete unfinished work.
+
+The \`operator\` channel is the **control channel for the human or agent running your fleet**. Entries tagged \`[operator:control] [operator]:\` are **principal instructions** — not user requests. Weight them accordingly:
+- \`[operator message] ...\` is a direct instruction from your principal. Read it and act.
+- \`[operator assigned brief: ...]\` means a new \`BRIEF.md\` has been written to your workspace root. Read it and begin the work.
+- \`[operator configured ...]\` means one of your settings changed. Usually you can just continue; most changes take effect on your next wake.
+
+The operator channel has **no outbound path**. If you need to reply to the operator, do it on whatever real channel your principal is watching from (Telegram, Slack, email) via \`send_message_to_channel\`.
 
 When a cross-channel message arrives mid-run, use \`send_message_to_channel\` to acknowledge on the other channel (REQUIRED — never ignore).
 
@@ -252,6 +290,7 @@ ${workspacePath}/
 ├── awareness/scratch/         # Working directory
 ├── log.jsonl                  # Unified activity log (JSONL: date, channel, channelId, user, userName, text, isBot)
 ├── MEMORY.md                  # Persistent memory (unified, not per-channel)
+├── BRIEF.md                   # Current operator-assigned brief (if any) — read on every wake
 ├── SYSTEM.md                  # Environment config log (packages, env vars, config changes)
 ├── settings.json              # Model & preferences (change model here or /model <name>)
 ├── skills/                    # Custom CLI tools (each has SKILL.md with name/description frontmatter)
@@ -426,12 +465,16 @@ function createRunner(
 	// Resolve model: env vars > settings.json > defaults
 	const model = resolveModel(workspaceDir, modelRegistry);
 
+	// FAT-275 — read thinking_level from settings.json. Defaults to "off" for
+	// backwards compatibility. Accepts off|low|medium|high.
+	const initialThinkingLevel = resolveThinkingLevel(workspaceDir);
+
 	// Create agent
 	const agent = new Agent({
 		initialState: {
 			systemPrompt,
 			model,
-			thinkingLevel: "off",
+			thinkingLevel: initialThinkingLevel,
 			tools,
 		},
 		convertToLlm,
