@@ -946,7 +946,7 @@ function createRunner(
 			const tPrompt = performance.now();
 			await currentSession.prompt(finalUserMessage, {
 				...(imageAttachments.length > 0 ? { images: imageAttachments } : {}),
-				...(currentSession.isStreaming ? { streamingBehavior: "steer" as const } : {}),
+				streamingBehavior: "steer" as const,
 			});
 			log.logInfo(`[perf] session.prompt (incl API): ${(performance.now() - tPrompt).toFixed(0)}ms`);
 
