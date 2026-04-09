@@ -20,6 +20,7 @@ import type { ChannelInfo, MomContext, UserInfo } from "./adapters/types.js";
 import { MomSettingsManager } from "./context.js";
 import * as log from "./log.js";
 import { resolveModel, resolveApiKey, registerFireworksProvider } from "./model-config.js";
+import { resolveOpenAIOverlay } from "./openai-overlay.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
@@ -252,6 +253,7 @@ function buildSystemPrompt(
 	workspacePath: string,
 	sandboxConfig: SandboxConfig,
 	formatInstructions: string,
+	model?: { id?: string; provider?: string },
 ): string {
 	const isDocker = sandboxConfig.type === "docker";
 	const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -259,6 +261,9 @@ function buildSystemPrompt(
 	const envDescription = isDocker
 		? `Docker container (Alpine Linux). Working directory: /. Install tools with apk add.`
 		: `Host machine. Working directory: ${process.cwd()}. Be careful with system modifications.`;
+
+	const overlay = resolveOpenAIOverlay(model);
+	const overlaySuffix = overlay ? `\n\n${overlay}` : "";
 
 	return `## Context
 - For current date/time, use: date
@@ -314,7 +319,7 @@ Timezone: ${tz}. Assume this when users don't specify.
 ## Tools
 bash, read, write, edit, attach, ping (cross-channel messaging). Each requires a "label" parameter.
 Use \`ping\` with channel ID to message a different channel. Channel ID formats: Telegram=numeric, Slack=C/D/G prefix, Email=email-{address}.
-`;
+${overlaySuffix}`;
 }
 
 /**
@@ -802,7 +807,7 @@ function createRunner(
 			// Set static system prompt (only changes if formatInstructions/sandbox change — effectively never)
 			const currentSession = getSession();
 			if (!runState.systemPromptSet) {
-				const systemPrompt = buildSystemPrompt(workspacePath, sandboxConfig, formatInstructions);
+				const systemPrompt = buildSystemPrompt(workspacePath, sandboxConfig, formatInstructions, agent.state.model);
 				currentSession.agent.setSystemPrompt(systemPrompt);
 				runState.systemPromptSet = true;
 			}
