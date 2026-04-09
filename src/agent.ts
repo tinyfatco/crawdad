@@ -144,8 +144,11 @@ function resolveThinkingLevel(workspaceDir: string): any {
 		if (!existsSync(settingsPath)) return "off";
 		const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
 			thinking_level?: string;
+			defaultThinkingLevel?: string;
 		};
-		const level = settings.thinking_level;
+		// Canonical key is thinking_level (written by Agency MCP configure).
+		// Fall back to defaultThinkingLevel (written by MomSettingsManager).
+		const level = settings.thinking_level ?? settings.defaultThinkingLevel;
 		if (!level) return "off";
 		const allowed = ["off", "minimal", "low", "medium", "high", "xhigh"];
 		if (allowed.includes(level)) return level;

@@ -56,9 +56,13 @@ const OPERATOR_USER = "operator";
 /**
  * Flat simple targets — edited as single JSON keys in `settings.json`.
  * (Verbosity and spontaneity go through dedicated branches below because
- * they have nested shapes or need a live reschedule.)
+ * they have nested shapes or need a live reschedule. thinking_level also
+ * gets its own branch for validation.)
  */
-const SIMPLE_SETTINGS_TARGETS = new Set(["model", "thinking_level"]);
+const SIMPLE_SETTINGS_TARGETS = new Set(["model"]);
+
+/** Accepted thinking_level values. Matches agent.ts resolveThinkingLevel. */
+const THINKING_LEVEL_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 /** Spontaneity leaf targets accepted via `configure`. */
 const SPONTANEITY_LEAF_TARGETS = new Set([
@@ -447,6 +451,9 @@ Replies to the operator happen through whatever channel you were already using w
 		) {
 			return this.configureSpontaneity(originalTarget, target, body.value, res);
 		}
+		if (target === "thinking_level") {
+			return this.configureThinkingLevel(originalTarget, body.value, res);
+		}
 		if (SIMPLE_SETTINGS_TARGETS.has(target)) {
 			return this.configureSimpleSetting(originalTarget, target, body.value, res);
 		}
@@ -527,6 +534,56 @@ Replies to the operator happen through whatever channel you were already using w
 			new_value: value,
 			applied_at: nowIso(),
 			note: "Settings changes take effect on next wake.",
+		});
+	}
+
+	/**
+	 * Dedicated thinking_level handler with validation. Writes to
+	 * `thinking_level` (the canonical key read by agent.ts) and also
+	 * syncs `defaultThinkingLevel` (used by MomSettingsManager) so
+	 * describe and any other consumers stay consistent.
+	 */
+	private configureThinkingLevel(
+		originalTarget: string,
+		value: unknown,
+		res: ServerResponse,
+	): void {
+		if (typeof value !== "string" || !(THINKING_LEVEL_VALUES as readonly string[]).includes(value)) {
+			return sendError(
+				res,
+				400,
+				"invalid_value",
+				`thinking_level must be one of: ${THINKING_LEVEL_VALUES.join(", ")}`,
+			);
+		}
+
+		const settings = this.loadSettingsRaw();
+		if (settings instanceof Response) return sendError(res, 500, "settings_read_failed");
+
+		const previousValue = settings.thinking_level ?? settings.defaultThinkingLevel ?? "off";
+		settings.thinking_level = value;
+		settings.defaultThinkingLevel = value;
+
+		if (!this.saveSettingsRaw(settings)) {
+			return sendError(res, 500, "settings_write_failed");
+		}
+
+		this.writeAwareness(
+			`[operator configured ${originalTarget} = ${JSON.stringify(value)}] (previously ${JSON.stringify(previousValue)})`,
+		);
+		this.triggerRun(
+			`The operator just changed your \`${originalTarget}\` to \`${value}\`. This takes effect on your next wake.`,
+		);
+
+		sendJson(res, 200, {
+			edited: true,
+			target: originalTarget,
+			tier: "container",
+			previous_value: previousValue,
+			new_value: value,
+			accepted_values: [...THINKING_LEVEL_VALUES],
+			applied_at: nowIso(),
+			note: "Takes effect on next wake.",
 		});
 	}
 
@@ -857,12 +914,21 @@ Replies to the operator happen through whatever channel you were already using w
 			heartbeatScheduleFile = null;
 		}
 
+		// Read thinking_level from the raw settings file directly.
+		// configure writes to `thinking_level` (canonical key for agent.ts),
+		// MomSettingsManager uses `defaultThinkingLevel`. Check both.
+		const rawSettings = this.loadSettingsRaw();
+		const thinkingLevel = rawSettings instanceof Response
+			? raw.defaultThinkingLevel ?? null
+			: (rawSettings as Record<string, unknown>).thinking_level ?? raw.defaultThinkingLevel ?? null;
+
 		sendJson(res, 200, {
 			spontaneity,
 			verbose: raw.verbose ?? null,
 			model: raw.defaultModel ?? null,
 			provider: raw.defaultProvider ?? null,
-			thinking_level: raw.defaultThinkingLevel ?? null,
+			thinking_level: thinkingLevel,
+			thinking_level_accepted: [...THINKING_LEVEL_VALUES],
 			heartbeat: {
 				checklist: heartbeatChecklist,
 				checklist_present: heartbeatChecklist !== null,
