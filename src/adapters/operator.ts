@@ -2,13 +2,16 @@
  * OperatorAdapter — headless inbound adapter for the Agency MCP.
  *
  * This is the container-side twin of the Agency MCP dispatcher on crawdad-cf.
- * The worker authenticates operator requests and proxies them to four
+ * The worker authenticates operator requests and proxies them to five
  * internal HTTP endpoints on the container gateway (port 3002):
  *
  *   GET  /operator/read       — proxies to /awareness/backlog
+ *   GET  /operator/describe   — returns current settings snapshot + HEARTBEAT.md
  *   POST /operator/message    — appends awareness line, triggers heartbeat-style run
  *   POST /operator/assign     — writes BRIEF.md, appends awareness, triggers run
- *   POST /operator/configure  — edits settings.json for whitelisted targets
+ *   POST /operator/configure  — edits settings.json or workspace files for
+ *                               whitelisted targets (spontaneity.*, verbose[.*],
+ *                               model, thinking_level, heartbeat.checklist)
  *
  * Auth: none at the container level. crawdad-cf is the only ingress and it
  * authenticates everything upstream. Matches the pattern used by /mcp today.
@@ -34,6 +37,8 @@ import { randomUUID } from "crypto";
 import { join } from "path";
 import type { IncomingMessage, ServerResponse } from "http";
 import * as log from "../log.js";
+import { MomSettingsManager, type MomVerboseSettings } from "../context.js";
+import { syncHeartbeatFromSpontaneity } from "../heartbeat-schedule.js";
 import type { ChannelStore } from "../store.js";
 import type {
 	ChannelInfo,
@@ -48,12 +53,43 @@ export const OPERATOR_CHANNEL_ID = "operator";
 const OPERATOR_CHANNEL_LABEL = "operator:control";
 const OPERATOR_USER = "operator";
 
-const CONTAINER_CONFIGURE_TARGETS = new Set([
-	"model",
-	"thinking_level",
-	"heartbeat.interval",
-	"heartbeat.enabled",
+/**
+ * Flat simple targets — edited as single JSON keys in `settings.json`.
+ * (Verbosity and spontaneity go through dedicated branches below because
+ * they have nested shapes or need a live reschedule.)
+ */
+const SIMPLE_SETTINGS_TARGETS = new Set(["model", "thinking_level"]);
+
+/** Spontaneity leaf targets accepted via `configure`. */
+const SPONTANEITY_LEAF_TARGETS = new Set([
+	"spontaneity",
+	"spontaneity.enabled",
+	"spontaneity.level",
+	"spontaneity.intervalMinutes",
+	"spontaneity.spontaneity",
+	"spontaneity.quietHours",
+	"spontaneity.quietHours.start",
+	"spontaneity.quietHours.end",
+	"spontaneity.timezone",
 ]);
+
+/** Special file-tier target: writes `/data/HEARTBEAT.md`. */
+const HEARTBEAT_CHECKLIST_TARGET = "heartbeat.checklist";
+
+/**
+ * Legacy aliases advertised by older Agency MCP docstrings. Accepted with a
+ * remap so existing operators don't hard-break, but the canonical targets
+ * are the `spontaneity.*` forms above.
+ */
+const LEGACY_ALIASES: Record<string, string> = {
+	"heartbeat.interval": "spontaneity.intervalMinutes",
+	"heartbeat.enabled": "spontaneity.enabled",
+};
+
+/** Pattern match for nested verbose targets like `verbose.slack.C09...`. */
+function isVerboseTarget(target: string): boolean {
+	return target === "verbose" || target.startsWith("verbose.");
+}
 
 interface AssignBody {
 	title: string;
@@ -218,6 +254,9 @@ Replies to the operator happen through whatever channel you were already using w
 			try {
 				if (pathname === "/operator/read" && method === "GET") {
 					return this.handleRead(url, res);
+				}
+				if (pathname === "/operator/describe" && method === "GET") {
+					return this.handleDescribe(res);
 				}
 				if (pathname === "/operator/message" && method === "POST") {
 					return this.handleMessage(req, res);
@@ -387,62 +426,451 @@ Replies to the operator happen through whatever channel you were already using w
 		if (!("value" in body)) {
 			return sendError(res, 400, "invalid_request", "value is required");
 		}
-		if (!CONTAINER_CONFIGURE_TARGETS.has(body.target)) {
-			return sendError(
-				res,
-				400,
-				"invalid_target",
-				`target must be one of: ${Array.from(CONTAINER_CONFIGURE_TARGETS).join(", ")}`,
-			);
+
+		// Remap legacy aliases to their canonical form before dispatch.
+		const originalTarget = body.target;
+		const target = LEGACY_ALIASES[body.target] ?? body.target;
+
+		// ── File tier: HEARTBEAT.md ─────────────────────────────────────────
+		if (target === HEARTBEAT_CHECKLIST_TARGET) {
+			return this.configureHeartbeatChecklist(originalTarget, body.value, res);
 		}
 
+		// ── Settings tier: verbosity, spontaneity, simple keys ──────────────
+		if (isVerboseTarget(target)) {
+			return this.configureVerbose(originalTarget, target, body.value, res);
+		}
+		if (
+			target.startsWith("spontaneity.") ||
+			target === "spontaneity" ||
+			SPONTANEITY_LEAF_TARGETS.has(target)
+		) {
+			return this.configureSpontaneity(originalTarget, target, body.value, res);
+		}
+		if (SIMPLE_SETTINGS_TARGETS.has(target)) {
+			return this.configureSimpleSetting(originalTarget, target, body.value, res);
+		}
+
+		return sendError(
+			res,
+			400,
+			"invalid_target",
+			`Unknown target: ${body.target}. See /operator/describe for supported fields.`,
+		);
+	}
+
+	// ------------------------------------------------------------------------
+	// Configure helpers — one per tier
+	// ------------------------------------------------------------------------
+
+	/**
+	 * Read settings.json from disk. Returns an empty object if the file is
+	 * missing. Used by the raw-key helpers that can't go through
+	 * MomSettingsManager (e.g. simple key edits, verbose nested writes).
+	 */
+	private loadSettingsRaw(): Record<string, unknown> | Response {
 		const settingsPath = join(this.workingDir, "settings.json");
-		let settings: Record<string, unknown> = {};
 		try {
-			if (existsSync(settingsPath)) {
-				settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
-			}
+			if (!existsSync(settingsPath)) return {};
+			return JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
 		} catch (err) {
 			log.logWarning(
 				"[operator] settings.json read failed",
 				err instanceof Error ? err.message : String(err),
 			);
-			return sendError(res, 500, "settings_read_failed");
+			return new Response(null); // sentinel; caller must handle
 		}
+	}
 
-		const previousValue = this.getNestedSetting(settings, body.target);
-		this.setNestedSetting(settings, body.target, body.value);
-
+	private saveSettingsRaw(settings: Record<string, unknown>): boolean {
+		const settingsPath = join(this.workingDir, "settings.json");
 		try {
 			writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+			return true;
 		} catch (err) {
 			log.logWarning(
 				"[operator] settings.json write failed",
 				err instanceof Error ? err.message : String(err),
 			);
+			return false;
+		}
+	}
+
+	private configureSimpleSetting(
+		originalTarget: string,
+		target: string,
+		value: unknown,
+		res: ServerResponse,
+	): void {
+		const settings = this.loadSettingsRaw();
+		if (settings instanceof Response) return sendError(res, 500, "settings_read_failed");
+
+		const previousValue = settings[target];
+		settings[target] = value;
+
+		if (!this.saveSettingsRaw(settings)) {
 			return sendError(res, 500, "settings_write_failed");
 		}
 
 		this.writeAwareness(
-			`[operator configured ${body.target} = ${JSON.stringify(body.value)}] (previously ${JSON.stringify(previousValue)})`,
+			`[operator configured ${originalTarget} = ${JSON.stringify(value)}] (previously ${JSON.stringify(previousValue)})`,
 		);
-
-		// Settings changes take effect on next wake. Trigger a short
-		// acknowledgement run so the agent notices the change without fully
-		// restarting. For model changes, the new model won't be used until
-		// the runner rebuilds — the operator should know that.
 		this.triggerRun(
-			`The operator just changed your \`${body.target}\` setting. The new value will take effect on your next wake. You may acknowledge briefly or carry on.`,
+			`The operator just changed your \`${originalTarget}\` setting. The new value will take effect on your next wake. You may acknowledge briefly or carry on.`,
 		);
 
 		sendJson(res, 200, {
 			edited: true,
-			target: body.target,
+			target: originalTarget,
 			tier: "container",
-			previous_value: previousValue,
-			new_value: body.value,
+			previous_value: previousValue ?? null,
+			new_value: value,
 			applied_at: nowIso(),
 			note: "Settings changes take effect on next wake.",
+		});
+	}
+
+	/**
+	 * Verbosity edits accept either:
+	 *  - target = "verbose", value = boolean | object (replace whole block)
+	 *  - target = "verbose.<path>", value = any (set nested key)
+	 */
+	private configureVerbose(
+		originalTarget: string,
+		target: string,
+		value: unknown,
+		res: ServerResponse,
+	): void {
+		const settings = this.loadSettingsRaw();
+		if (settings instanceof Response) return sendError(res, 500, "settings_read_failed");
+
+		const previousValue = this.getNestedSetting(settings, target);
+
+		if (target === "verbose") {
+			// Replace the entire verbose block. Accept boolean or object.
+			if (
+				typeof value !== "boolean" &&
+				(value === null || typeof value !== "object")
+			) {
+				return sendError(
+					res,
+					400,
+					"invalid_value",
+					"verbose must be a boolean or an object",
+				);
+			}
+			settings.verbose = value as boolean | MomVerboseSettings;
+		} else {
+			// Nested write like verbose.slack.C09...
+			this.setNestedSetting(settings, target, value);
+		}
+
+		if (!this.saveSettingsRaw(settings)) {
+			return sendError(res, 500, "settings_write_failed");
+		}
+
+		this.writeAwareness(
+			`[operator configured ${originalTarget} = ${JSON.stringify(value)}] (previously ${JSON.stringify(previousValue)})`,
+		);
+		this.triggerRun(
+			`The operator just changed your verbosity (\`${originalTarget}\`). Acknowledge briefly or carry on.`,
+		);
+
+		sendJson(res, 200, {
+			edited: true,
+			target: originalTarget,
+			tier: "container",
+			previous_value: previousValue,
+			new_value: value,
+			applied_at: nowIso(),
+			note: "Verbosity changes take effect on the next outbound message.",
+		});
+	}
+
+	/**
+	 * Spontaneity edits go through MomSettingsManager so the level/interval
+	 * sync logic runs, then trigger a live reschedule of `events/heartbeat.json`
+	 * so the EventsWatcher + DO wake manifest pick up the new cadence without
+	 * waiting for the next container boot.
+	 */
+	private configureSpontaneity(
+		originalTarget: string,
+		target: string,
+		value: unknown,
+		res: ServerResponse,
+	): void {
+		const manager = new MomSettingsManager(this.workingDir);
+		const previous = manager.getSpontaneitySettings();
+
+		// Translate a dotted leaf target into a patch object.
+		const patch: Partial<import("../context.js").MomSpontaneitySettings> = {};
+		try {
+			if (target === "spontaneity") {
+				if (value === null || typeof value !== "object") {
+					return sendError(
+						res,
+						400,
+						"invalid_value",
+						"spontaneity must be an object",
+					);
+				}
+				Object.assign(patch, value);
+			} else if (target === "spontaneity.enabled") {
+				if (typeof value !== "boolean") {
+					return sendError(res, 400, "invalid_value", "spontaneity.enabled must be a boolean");
+				}
+				patch.enabled = value;
+			} else if (target === "spontaneity.level") {
+				if (typeof value !== "number" || value < 1 || value > 5 || !Number.isInteger(value)) {
+					return sendError(
+						res,
+						400,
+						"invalid_value",
+						"spontaneity.level must be an integer 1-5",
+					);
+				}
+				patch.level = value as 1 | 2 | 3 | 4 | 5;
+			} else if (target === "spontaneity.intervalMinutes") {
+				if (typeof value !== "number" || value <= 0) {
+					return sendError(
+						res,
+						400,
+						"invalid_value",
+						"spontaneity.intervalMinutes must be a positive number",
+					);
+				}
+				patch.intervalMinutes = value;
+			} else if (target === "spontaneity.spontaneity") {
+				if (typeof value !== "number" || value < 0 || value > 1) {
+					return sendError(
+						res,
+						400,
+						"invalid_value",
+						"spontaneity.spontaneity must be a number between 0 and 1",
+					);
+				}
+				patch.spontaneity = value;
+			} else if (target === "spontaneity.quietHours") {
+				if (
+					!value ||
+					typeof value !== "object" ||
+					typeof (value as { start?: unknown }).start !== "string" ||
+					typeof (value as { end?: unknown }).end !== "string"
+				) {
+					return sendError(
+						res,
+						400,
+						"invalid_value",
+						"spontaneity.quietHours must be { start, end } with HH:MM strings",
+					);
+				}
+				patch.quietHours = value as { start: string; end: string };
+			} else if (target === "spontaneity.quietHours.start") {
+				if (typeof value !== "string") {
+					return sendError(res, 400, "invalid_value", "quietHours.start must be a string");
+				}
+				patch.quietHours = { ...previous.quietHours, start: value };
+			} else if (target === "spontaneity.quietHours.end") {
+				if (typeof value !== "string") {
+					return sendError(res, 400, "invalid_value", "quietHours.end must be a string");
+				}
+				patch.quietHours = { ...previous.quietHours, end: value };
+			} else if (target === "spontaneity.timezone") {
+				if (typeof value !== "string") {
+					return sendError(res, 400, "invalid_value", "spontaneity.timezone must be a string");
+				}
+				patch.timezone = value;
+			} else {
+				return sendError(res, 400, "invalid_target", `Unknown spontaneity target: ${target}`);
+			}
+		} catch (err) {
+			return sendError(
+				res,
+				400,
+				"invalid_value",
+				err instanceof Error ? err.message : "Invalid value",
+			);
+		}
+
+		const merged = manager.setSpontaneity(patch);
+
+		// Live reschedule: rewrite events/heartbeat.json so the next fire
+		// reflects the new cadence instead of waiting for a full boot.
+		let scheduleResult: ReturnType<typeof syncHeartbeatFromSpontaneity> | null = null;
+		try {
+			scheduleResult = syncHeartbeatFromSpontaneity(this.workingDir, merged);
+		} catch (err) {
+			log.logWarning(
+				"[operator] heartbeat reschedule failed",
+				err instanceof Error ? err.message : String(err),
+			);
+		}
+
+		this.writeAwareness(
+			`[operator configured ${originalTarget} = ${JSON.stringify(value)}] (previously ${JSON.stringify(
+				this.pickPrevious(previous, target),
+			)})`,
+		);
+		this.triggerRun(
+			`The operator just changed your \`${originalTarget}\` setting. Heartbeat schedule was resynced; next fire will reflect the new cadence.`,
+		);
+
+		sendJson(res, 200, {
+			edited: true,
+			target: originalTarget,
+			tier: "container",
+			previous_value: this.pickPrevious(previous, target),
+			new_value: value,
+			applied_at: nowIso(),
+			schedule: scheduleResult,
+			note: "Heartbeat schedule resynced live. Other effects take place on next wake.",
+		});
+	}
+
+	/**
+	 * Pick the previous value matching the dotted target path out of the
+	 * current spontaneity block, so the response reflects exactly the
+	 * leaf the operator changed.
+	 */
+	private pickPrevious(
+		previous: import("../context.js").MomSpontaneitySettings,
+		target: string,
+	): unknown {
+		switch (target) {
+			case "spontaneity":
+				return previous;
+			case "spontaneity.enabled":
+				return previous.enabled;
+			case "spontaneity.level":
+				return previous.level;
+			case "spontaneity.intervalMinutes":
+				return previous.intervalMinutes;
+			case "spontaneity.spontaneity":
+				return previous.spontaneity;
+			case "spontaneity.quietHours":
+				return previous.quietHours;
+			case "spontaneity.quietHours.start":
+				return previous.quietHours.start;
+			case "spontaneity.quietHours.end":
+				return previous.quietHours.end;
+			case "spontaneity.timezone":
+				return previous.timezone ?? null;
+			default:
+				return null;
+		}
+	}
+
+	/**
+	 * Write the `HEARTBEAT.md` checklist prompt. Empty string is legal and
+	 * triggers the documented kill-switch behavior in the heartbeat adapter.
+	 */
+	private configureHeartbeatChecklist(
+		originalTarget: string,
+		value: unknown,
+		res: ServerResponse,
+	): void {
+		if (typeof value !== "string") {
+			return sendError(
+				res,
+				400,
+				"invalid_value",
+				"heartbeat.checklist value must be a string (empty string = kill switch)",
+			);
+		}
+
+		const checklistPath = join(this.workingDir, "HEARTBEAT.md");
+		let previousValue: string | null = null;
+		try {
+			if (existsSync(checklistPath)) {
+				previousValue = readFileSync(checklistPath, "utf-8");
+			}
+		} catch (err) {
+			log.logWarning(
+				"[operator] HEARTBEAT.md read failed",
+				err instanceof Error ? err.message : String(err),
+			);
+		}
+
+		try {
+			writeFileSync(checklistPath, value, "utf-8");
+		} catch (err) {
+			log.logWarning(
+				"[operator] HEARTBEAT.md write failed",
+				err instanceof Error ? err.message : String(err),
+			);
+			return sendError(res, 500, "file_write_failed");
+		}
+
+		const killSwitch = value.trim().length === 0;
+		this.writeAwareness(
+			killSwitch
+				? `[operator configured ${originalTarget}] HEARTBEAT.md cleared — heartbeat kill switch ON.`
+				: `[operator configured ${originalTarget}] HEARTBEAT.md rewritten (${value.length} chars).`,
+		);
+		this.triggerRun(
+			killSwitch
+				? `The operator just cleared your HEARTBEAT.md — heartbeat runs will be skipped until it's restored.`
+				: `The operator just rewrote your HEARTBEAT.md checklist. The new content will be injected on your next heartbeat fire.`,
+		);
+
+		sendJson(res, 200, {
+			edited: true,
+			target: originalTarget,
+			tier: "file",
+			path: "HEARTBEAT.md",
+			previous_value: previousValue,
+			new_value: value,
+			kill_switch: killSwitch,
+			applied_at: nowIso(),
+			note: killSwitch
+				? "HEARTBEAT.md is empty. Heartbeat runs will be skipped until the file is non-empty."
+				: "HEARTBEAT.md updated. Takes effect on the next heartbeat fire.",
+		});
+	}
+
+	// ------------------------------------------------------------------------
+	// /operator/describe
+	// ------------------------------------------------------------------------
+
+	private handleDescribe(res: ServerResponse): void {
+		const manager = new MomSettingsManager(this.workingDir);
+		const spontaneity = manager.getSpontaneitySettings();
+		const raw = manager.getRawSettings();
+
+		let heartbeatChecklist: string | null = null;
+		const checklistPath = join(this.workingDir, "HEARTBEAT.md");
+		try {
+			if (existsSync(checklistPath)) {
+				heartbeatChecklist = readFileSync(checklistPath, "utf-8");
+			}
+		} catch {
+			heartbeatChecklist = null;
+		}
+
+		const heartbeatFile = join(this.workingDir, "events", "heartbeat.json");
+		let heartbeatScheduleFile: unknown = null;
+		try {
+			if (existsSync(heartbeatFile)) {
+				heartbeatScheduleFile = JSON.parse(readFileSync(heartbeatFile, "utf-8"));
+			}
+		} catch {
+			heartbeatScheduleFile = null;
+		}
+
+		sendJson(res, 200, {
+			spontaneity,
+			verbose: raw.verbose ?? null,
+			model: raw.defaultModel ?? null,
+			provider: raw.defaultProvider ?? null,
+			thinking_level: raw.defaultThinkingLevel ?? null,
+			heartbeat: {
+				checklist: heartbeatChecklist,
+				checklist_present: heartbeatChecklist !== null,
+				checklist_empty:
+					heartbeatChecklist !== null && heartbeatChecklist.trim().length === 0,
+				schedule_file: heartbeatScheduleFile,
+			},
+			described_at: nowIso(),
 		});
 	}
 

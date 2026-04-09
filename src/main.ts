@@ -4,7 +4,8 @@ import { copyFileSync, existsSync } from "fs";
 import { join, resolve } from "path";
 import { DiscordWebhookAdapter } from "./adapters/discord-webhook.js";
 import { EmailWebhookAdapter } from "./adapters/email-webhook.js";
-import { HeartbeatAdapter, HEARTBEAT_CHANNEL_ID } from "./adapters/heartbeat.js";
+import { HeartbeatAdapter } from "./adapters/heartbeat.js";
+import { syncHeartbeatFromSpontaneity } from "./heartbeat-schedule.js";
 import { OperatorAdapter } from "./adapters/operator.js";
 import { TickAdapter } from "./adapters/tick.js";
 import { SlackSocketAdapter } from "./adapters/slack-socket.js";
@@ -784,9 +785,12 @@ gateway.registerUpgrade("/terminal", handleTerminalUpgrade(workingDir));
 
 // Operator intake — headless inbound routes for the Agency MCP. Crawdad-cf
 // authenticates the operator upstream; the container trusts the worker.
-// `read` is GET (paginated awareness backlog); the other three are POST.
-// Routes are marked ready immediately since the adapter has no async start.
+// `read` / `describe` are GET (paginated awareness backlog / settings snapshot);
+// the other three are POST. Routes are marked ready immediately since the
+// adapter has no async start.
 gateway.registerGet("/operator/read", (req, res) => operatorAdapter.dispatch!(req, res));
+gateway.registerGet("/operator/describe", (req, res) => operatorAdapter.dispatch!(req, res));
+gateway.markReady("/operator/describe");
 for (const path of ["/operator/message", "/operator/assign", "/operator/configure"]) {
 	gateway.register(path, (req, res) => operatorAdapter.dispatch!(req, res));
 	gateway.markReady(path);
@@ -1199,47 +1203,12 @@ To change these, edit \`settings.json\` directly.
 	}
 }
 
-// Write heartbeat event file from settings.json on every boot (settings is authoritative)
+// Write heartbeat event file from settings.json on every boot (settings is authoritative).
+// Extracted to `heartbeat-schedule.ts` so the Agency MCP operator intake can
+// call it after live `configure spontaneity.*` edits.
 {
-	const { existsSync, mkdirSync, writeFileSync, unlinkSync } = await import("fs");
 	const settings = new MomSettingsManager(workingDir);
-	const spontaneity = settings.getSpontaneitySettings();
-	const eventsDir = join(workingDir, "events");
-	const heartbeatFile = join(eventsDir, "heartbeat.json");
-
-	if (spontaneity.enabled) {
-		if (!existsSync(eventsDir)) {
-			mkdirSync(eventsDir, { recursive: true });
-		}
-		const tz = spontaneity.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-		// Convert interval to valid cron (minutes field only supports 0-59)
-		let schedule: string;
-		const mins = spontaneity.intervalMinutes;
-		if (mins < 60) {
-			schedule = `*/${mins} * * * *`;
-		} else if (mins < 1440) {
-			const hours = Math.max(1, Math.round(mins / 60));
-			schedule = `0 */${hours} * * *`;
-		} else {
-			schedule = `0 8 * * *`; // daily at 8am
-		}
-
-		const event = {
-			type: "periodic",
-			channelId: HEARTBEAT_CHANNEL_ID,
-			text: "[heartbeat] Spontaneous reflection",
-			schedule,
-			timezone: tz,
-			spontaneity: spontaneity.spontaneity,
-			quietHours: spontaneity.quietHours,
-		};
-		writeFileSync(heartbeatFile, JSON.stringify(event, null, 2), "utf-8");
-		log.logInfo(`Wrote heartbeat.json (every ${spontaneity.intervalMinutes}min, spontaneity=${spontaneity.spontaneity}, tz=${tz})`);
-	} else if (existsSync(heartbeatFile)) {
-		// Spontaneity disabled — remove heartbeat event file
-		unlinkSync(heartbeatFile);
-		log.logInfo("Removed heartbeat.json (spontaneity disabled)");
-	}
+	syncHeartbeatFromSpontaneity(workingDir, settings.getSpontaneitySettings());
 }
 
 // Seed auto-compaction event — runs at 4am daily, cleans up context

@@ -172,6 +172,51 @@ export class MomSettingsManager {
 		};
 	}
 
+	/**
+	 * Merge a partial spontaneity patch and persist. If `level` changes and
+	 * `intervalMinutes` is not supplied in the patch, interval is recomputed
+	 * from the level table so the two stay in sync.
+	 */
+	setSpontaneity(patch: Partial<MomSpontaneitySettings>): MomSpontaneitySettings {
+		const current = this.getSpontaneitySettings();
+		const merged: MomSpontaneitySettings = { ...current, ...patch };
+		if (patch.level !== undefined && patch.intervalMinutes === undefined) {
+			merged.intervalMinutes =
+				SPONTANEITY_LEVELS[merged.level] ?? DEFAULT_SPONTANEITY.intervalMinutes;
+		}
+		this.settings.spontaneity = merged;
+		this.save();
+		return merged;
+	}
+
+	/**
+	 * Read the raw verbose setting for the operator `describe` verb.
+	 * Callers that want channel-scoped boolean resolution should use
+	 * `getVerbose(channelId, platform)` below instead.
+	 */
+	getVerboseRaw(): boolean | MomVerboseSettings | undefined {
+		return this.settings.verbose;
+	}
+
+	/**
+	 * Replace the entire verbose block. Accepts a boolean (simple global
+	 * form) or an object (per-platform / per-channel control). Used by
+	 * the operator `configure verbose` path.
+	 */
+	setVerboseRaw(value: boolean | MomVerboseSettings): void {
+		this.settings.verbose = value;
+		this.save();
+	}
+
+	/**
+	 * Raw access to the in-memory settings blob, for callers that need to
+	 * describe the full current state (e.g. the operator `describe` verb).
+	 * Returns a defensive copy.
+	 */
+	getRawSettings(): MomSettings {
+		return JSON.parse(JSON.stringify(this.settings));
+	}
+
 	getDefaultModel(): string | undefined {
 		return this.settings.defaultModel;
 	}
