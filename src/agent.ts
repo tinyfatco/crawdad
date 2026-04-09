@@ -26,6 +26,7 @@ import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 import { wasYielded, resetYield } from "./tools/yield-no-action.js";
+import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
 
 export interface PendingMessage {
 	userName: string;
@@ -564,6 +565,7 @@ function createRunner(
 			enqueueMessage(text: string, target: "main" | "thread", errorContext: string, doLog?: boolean): void;
 		} | null,
 		pendingTools: new Map<string, { toolName: string; args: unknown; startTime: number }>(),
+		toolsUsed: [] as string[],
 		totalUsage: {
 			input: 0,
 			output: 0,
@@ -605,6 +607,7 @@ function createRunner(
 				args: agentEvent.args,
 				startTime: Date.now(),
 			});
+			runState.toolsUsed.push(agentEvent.toolName);
 
 			log.logToolStart(logCtx, agentEvent.toolName, label, agentEvent.args as Record<string, unknown>);
 			ctx.emitContentBlock?.({ type: "toolCall", id: agentEvent.toolCallId, name: agentEvent.toolName, arguments: agentEvent.args || {} });
@@ -846,6 +849,7 @@ function createRunner(
 				channelName: ctx.channelName,
 			};
 			runState.pendingTools.clear();
+			runState.toolsUsed = [];
 			runState.totalUsage = {
 				input: 0,
 				output: 0,
@@ -931,6 +935,13 @@ function createRunner(
 				finalUserMessage += `\n\n<attachments>\n${nonImagePaths.join("\n")}\n</attachments>`;
 			}
 
+			// GPT-5 ack fast path: short approvals get "skip recap, act now" injection
+			const ackInstruction = resolveAckFastPath(ctx.message.text, currentModel);
+			if (ackInstruction) {
+				finalUserMessage += `\n\n${ackInstruction}`;
+				log.logInfo(`[gpt-steering] Ack fast path injected for "${ctx.message.text.substring(0, 40)}"`);
+			}
+
 			// Debug: write context to last_prompt.jsonl
 			const debugContext = {
 				systemPrompt: currentSession.agent.state.systemPrompt,
@@ -959,6 +970,27 @@ function createRunner(
 				if (last && last.stopReason && last.stopReason !== "error") {
 					runState.stopReason = last.stopReason;
 					runState.errorMessage = undefined;
+				}
+			}
+
+			// GPT-5 planning-only retry: if the model narrated a plan without acting, nudge and re-prompt once
+			if (runState.stopReason !== "error") {
+				const messages = currentSession.messages;
+				const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
+				const assistantText =
+					lastAssistant?.content
+						.filter((c): c is { type: "text"; text: string } => c.type === "text")
+						.map((c) => c.text)
+						.join("\n") || "";
+
+				const retryInstruction = detectPlanningOnlyTurn(assistantText, runState.toolsUsed, currentModel);
+				if (retryInstruction) {
+					log.logInfo(`[gpt-steering] Planning-only turn detected, retrying with act-now nudge`);
+					log.logInfo(`[gpt-steering] Assistant said: "${assistantText.substring(0, 120)}..."`);
+					await currentSession.prompt(retryInstruction, {
+						streamingBehavior: "steer" as const,
+					});
+					log.logInfo(`[gpt-steering] Retry prompt completed`);
 				}
 			}
 
