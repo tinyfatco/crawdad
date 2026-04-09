@@ -1039,7 +1039,7 @@ function createRunner(
 			}
 
 			// Log usage summary
-			if (runState.totalUsage.cost.total > 0) {
+			if (runState.totalUsage.cost.total > 0 && runState.logCtx && runState.queue) {
 				const messages = currentSession.messages;
 				const lastAssistantMessage = messages
 					.slice()
@@ -1054,7 +1054,7 @@ function createRunner(
 					: 0;
 				const contextWindow = agent.state.model?.contextWindow || 200000;
 
-				const summary = log.logUsageSummary(runState.logCtx!, runState.totalUsage, contextTokens, contextWindow);
+				const summary = log.logUsageSummary(runState.logCtx, runState.totalUsage, contextTokens, contextWindow);
 				runState.queue.enqueue(() => ctx.respondInThread(summary), "usage summary");
 				await queueChain;
 			}
