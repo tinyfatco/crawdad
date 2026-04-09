@@ -944,7 +944,10 @@ function createRunner(
 			log.logInfo(`[awareness] Pre-prompt: ${currentSession.messages.length} messages in context`);
 
 			const tPrompt = performance.now();
-			await currentSession.prompt(finalUserMessage, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+			await currentSession.prompt(finalUserMessage, {
+				...(imageAttachments.length > 0 ? { images: imageAttachments } : {}),
+				...(currentSession.isStreaming ? { streamingBehavior: "steer" as const } : {}),
+			});
 			log.logInfo(`[perf] session.prompt (incl API): ${(performance.now() - tPrompt).toFixed(0)}ms`);
 
 			// If overflow error triggered background compaction+retry, wait for it.
