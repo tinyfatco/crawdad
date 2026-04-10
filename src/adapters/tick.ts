@@ -35,21 +35,19 @@ export const TICK_CHANNEL_ID = "tick";
 
 const DEFAULT_TICK_PROMPT = `A small amount of time has passed. You're tuned in. You're around.
 
-This isn't a task. Most ticks end with yield_no_action, and that's fine — presence is not the same thing as chatter.
+This is a heartbeat. Look at your awareness and act. If you have active work, do it. If something is worth saying, use send_message_to_channel. If there's truly nothing, yield_no_action with a brief note.
 
-Consider: is there anything worth saying to anyone right now? Use send_message_to_channel if so. Is there quiet work to do silently? Do it. Is there nothing? yield_no_action with a brief note.
-
-You're here. Time is passing. Notice. Don't overthink it.`;
+You're here. Time is passing. Act on it.`;
 
 export class TickAdapter implements PlatformAdapter {
 	readonly name = "tick";
 	readonly maxMessageLength = 100000;
 	readonly formatInstructions = `## Tick (Ambient Presence)
-You are tuned in. You received a tick — a cheap ambient nudge — because you declared yourself present. This is NOT a task. Nothing demands a response. Most ticks end with yield_no_action, which is the correct default.
+You are tuned in. You received a tick — an ambient heartbeat. If you have active work, keep working. If something is worth saying, use \`send_message_to_channel\`. If there's quiet work to do, do it.
 
-If something surfaced worth sharing, use \`send_message_to_channel\` to reach out. If there's quiet work to do, do it silently. If there's nothing, yield with a brief note like "still here, nothing new."
+In narrating mode: you MUST message every tick with a short update. In quiet mode: only message if something genuinely surfaced.
 
-Don't audit yourself. Don't review your whole backlog. Just notice what's here, and act if there's something to act on.`;
+If there is truly nothing to do and nothing to say, yield_no_action with a brief note.`;
 
 	private workingDir: string;
 	private awarenessDir: string;
