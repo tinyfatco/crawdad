@@ -1167,7 +1167,10 @@ function createRunner(
 
 			const result = await getSession().compact(instructions);
 
-			// session.compact() already calls agent.replaceMessages() internally
+			// Rewrite context.jsonl with only the compacted entries.
+			// The pre-compaction content was already archived above.
+			(getSessionManager() as any)._rewriteFile();
+
 			return {
 				messagesBefore,
 				messagesAfter: currentSession.messages.length,
