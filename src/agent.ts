@@ -17,7 +17,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "fs";
 import { copyFile, mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import type { ChannelInfo, MomContext, UserInfo } from "./adapters/types.js";
-import { MomSettingsManager } from "./context.js";
+import { MomSettingsManager, type VerbosityLevel } from "./context.js";
 import * as log from "./log.js";
 import { resolveModel, resolveApiKey, registerFireworksProvider } from "./model-config.js";
 import { resolveOpenAIOverlay } from "./openai-overlay.js";
@@ -337,6 +337,7 @@ function buildSessionPreamble(
 	skills: Skill[],
 	displayChannelId: string,
 	displayChannelName?: string,
+	verbosity?: VerbosityLevel,
 ): string {
 	const channelMappings =
 		channels.length > 0 ? channels.map((c) => `${c.id}\t#${c.name}`).join("\n") : "(none)";
@@ -345,8 +346,12 @@ function buildSessionPreamble(
 	const skillsSection = skills.length > 0 ? formatSkillsForPrompt(skills) : "(none)";
 	const attending = displayChannelName ? `${displayChannelName} (${displayChannelId})` : displayChannelId;
 
+	const verbosityNote = verbosity === "messages-only"
+		? "\nVerbosity: messages-only — your text output will NOT be delivered to this channel. Use send_message_to_channel for ALL communication."
+		: "";
+
 	return `<session_context>
-Attending: ${attending}
+Attending: ${attending}${verbosityNote}
 Channels:
 ${channelMappings}
 Users:
@@ -819,6 +824,8 @@ function createRunner(
 			}
 
 			// Build dynamic preamble (injected into user message below)
+			settingsManager.reload();
+			const channelVerbosity = settingsManager.getVerbose(ctx.message.channel);
 			const sessionPreamble = buildSessionPreamble(
 				workspaceContext,
 				ctx.channels,
@@ -826,6 +833,7 @@ function createRunner(
 				skills,
 				ctx.message.channel,
 				ctx.channelName,
+				channelVerbosity,
 			);
 
 			// Re-resolve model each run
