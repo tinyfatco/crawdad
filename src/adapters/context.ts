@@ -1,3 +1,4 @@
+import type { VerbosityLevel } from "../context.js";
 import type { MomContext, MomEvent, UserInfo, ChannelInfo } from "./types.js";
 
 // ============================================================================
@@ -41,8 +42,8 @@ export interface TwoMessageConfig {
 	channelName?: string;
 	/** Whether this is a scheduled event */
 	isEvent?: boolean;
-	/** Whether to show the working message (default: true) */
-	verbose?: boolean;
+	/** Verbosity: true (full), false (no working msg), "messages-only" (no harness output at all) */
+	verbose?: VerbosityLevel;
 }
 
 /**
@@ -103,11 +104,12 @@ export function createTwoMessageContext(
 		return isWorking ? display + " ..." : display;
 	};
 
-	const verbose = config.verbose !== false; // default true
+	const verbose = config.verbose !== false && config.verbose !== "messages-only"; // default true
+	const messagesOnly = config.verbose === "messages-only";
 
 	// Send or edit the working message (Message 1)
 	const flushWorkingMessage = async () => {
-		if (!verbose) return; // silent mode — skip working message entirely
+		if (!verbose) return; // silent/messages-only mode — skip working message entirely
 		const display = buildWorkingDisplay();
 		if (workingMessageId) {
 			await ops.update(event.channel, workingMessageId, display);
@@ -200,6 +202,13 @@ export function createTwoMessageContext(
 			updatePromise = updatePromise.then(async () => {
 				if (!text.trim()) return;
 
+				// messages-only: suppress harness-driven final response entirely.
+				// Agent communicates only via send_message_to_channel.
+				if (messagesOnly) {
+					pendingText = null;
+					return;
+				}
+
 				// Discard pendingText (it's the same text about to be sent as Message 2)
 				pendingText = null;
 
@@ -231,6 +240,7 @@ export function createTwoMessageContext(
 				},
 
 		setTyping: async (isTyping: boolean) => {
+			if (messagesOnly) return; // no harness-driven UI in messages-only
 			if (isTyping && !workingMessageId) {
 				updatePromise = updatePromise.then(async () => {
 					if (!workingMessageId) {

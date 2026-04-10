@@ -43,16 +43,18 @@ export interface MomSpontaneitySettings {
 	timezone?: string; // IANA timezone, defaults to system
 }
 
+export type VerbosityLevel = boolean | "messages-only";
+
 export interface MomVerboseSettings {
-	default?: boolean;
-	[platform: string]: boolean | Record<string, boolean> | undefined;
+	default?: VerbosityLevel;
+	[platform: string]: VerbosityLevel | Record<string, VerbosityLevel> | undefined;
 }
 
 export interface MomSettings {
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high";
-	verbose?: boolean | MomVerboseSettings;
+	verbose?: VerbosityLevel | MomVerboseSettings;
 	compaction?: Partial<MomCompactionSettings>;
 	retry?: Partial<MomRetrySettings>;
 	spontaneity?: Partial<MomSpontaneitySettings>;
@@ -194,7 +196,7 @@ export class MomSettingsManager {
 	 * Callers that want channel-scoped boolean resolution should use
 	 * `getVerbose(channelId, platform)` below instead.
 	 */
-	getVerboseRaw(): boolean | MomVerboseSettings | undefined {
+	getVerboseRaw(): VerbosityLevel | MomVerboseSettings | undefined {
 		return this.settings.verbose;
 	}
 
@@ -203,7 +205,7 @@ export class MomSettingsManager {
 	 * form) or an object (per-platform / per-channel control). Used by
 	 * the operator `configure verbose` path.
 	 */
-	setVerboseRaw(value: boolean | MomVerboseSettings): void {
+	setVerboseRaw(value: VerbosityLevel | MomVerboseSettings): void {
 		this.settings.verbose = value;
 		this.save();
 	}
@@ -281,34 +283,34 @@ export class MomSettingsManager {
 		return undefined;
 	}
 
-	getVerbose(channelId: string, platform?: string): boolean {
+	getVerbose(channelId: string, platform?: string): VerbosityLevel {
 		const v = this.settings.verbose;
-		// Legacy bare boolean
-		if (typeof v === "boolean") return v;
+		// Legacy bare boolean or "messages-only"
+		if (typeof v === "boolean" || v === "messages-only") return v;
 		// No verbose config at all
 		if (!v) return true;
 		// Check platform bucket for channel override
 		if (platform) {
 			const bucket = v[platform];
 			if (bucket && typeof bucket === "object" && channelId in bucket) {
-				return (bucket as Record<string, boolean>)[channelId];
+				return (bucket as Record<string, VerbosityLevel>)[channelId];
 			}
 		}
 		// Fall back to default
-		return v.default !== false; // default true
+		return v.default ?? true; // default true
 	}
 
-	setChannelVerbose(channelId: string, platform: string, value: boolean | null): void {
+	setChannelVerbose(channelId: string, platform: string, value: VerbosityLevel | null): void {
 		let v = this.settings.verbose;
-		// Migrate bare boolean to object form
-		if (typeof v === "boolean" || !v) {
-			v = { default: typeof v === "boolean" ? v : true };
+		// Migrate bare boolean / string to object form
+		if (typeof v !== "object" || !v) {
+			v = { default: typeof v === "boolean" ? v : (v === "messages-only" ? v : true) };
 			this.settings.verbose = v;
 		}
 		if (!v[platform] || typeof v[platform] !== "object") {
 			(v as any)[platform] = {};
 		}
-		const bucket = v[platform] as Record<string, boolean>;
+		const bucket = v[platform] as Record<string, VerbosityLevel>;
 		if (value === null) {
 			delete bucket[channelId];
 		} else {
@@ -317,9 +319,9 @@ export class MomSettingsManager {
 		this.save();
 	}
 
-	setVerboseDefault(value: boolean): void {
+	setVerboseDefault(value: VerbosityLevel): void {
 		let v = this.settings.verbose;
-		if (typeof v === "boolean" || !v) {
+		if (typeof v !== "object" || !v) {
 			v = { default: value };
 			this.settings.verbose = v;
 		} else {
@@ -328,19 +330,19 @@ export class MomSettingsManager {
 		this.save();
 	}
 
-	getVerboseDefault(): boolean {
+	getVerboseDefault(): VerbosityLevel {
 		const v = this.settings.verbose;
-		if (typeof v === "boolean") return v;
+		if (typeof v === "boolean" || v === "messages-only") return v;
 		if (!v) return true;
-		return v.default !== false;
+		return v.default ?? true;
 	}
 
-	getChannelVerboseOverride(channelId: string, platform: string): boolean | null {
+	getChannelVerboseOverride(channelId: string, platform: string): VerbosityLevel | null {
 		const v = this.settings.verbose;
-		if (typeof v === "boolean" || !v) return null;
+		if (typeof v !== "object" || !v) return null;
 		const bucket = v[platform];
 		if (bucket && typeof bucket === "object" && channelId in bucket) {
-			return (bucket as Record<string, boolean>)[channelId];
+			return (bucket as Record<string, VerbosityLevel>)[channelId];
 		}
 		return null;
 	}

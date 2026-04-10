@@ -37,7 +37,7 @@ import { randomUUID } from "crypto";
 import { join } from "path";
 import type { IncomingMessage, ServerResponse } from "http";
 import * as log from "../log.js";
-import { MomSettingsManager, type MomVerboseSettings } from "../context.js";
+import { MomSettingsManager, type MomVerboseSettings, type VerbosityLevel } from "../context.js";
 import { syncHeartbeatFromSpontaneity } from "../heartbeat-schedule.js";
 import type { ChannelStore } from "../store.js";
 import type {
@@ -604,19 +604,20 @@ Replies to the operator happen through whatever channel you were already using w
 		const previousValue = this.getNestedSetting(settings, target);
 
 		if (target === "verbose") {
-			// Replace the entire verbose block. Accept boolean or object.
+			// Replace the entire verbose block. Accept boolean, "messages-only", or object.
 			if (
 				typeof value !== "boolean" &&
+				value !== "messages-only" &&
 				(value === null || typeof value !== "object")
 			) {
 				return sendError(
 					res,
 					400,
 					"invalid_value",
-					"verbose must be a boolean or an object",
+					'verbose must be a boolean, "messages-only", or an object',
 				);
 			}
-			settings.verbose = value as boolean | MomVerboseSettings;
+			settings.verbose = value as VerbosityLevel | MomVerboseSettings;
 		} else {
 			// Nested write like verbose.slack.C09...
 			this.setNestedSetting(settings, target, value);
