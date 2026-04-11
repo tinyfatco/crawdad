@@ -27,6 +27,7 @@ import { computeWakeManifest, createEventsWatcher } from "./events.js";
 import { Gateway } from "./gateway.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
+import * as sendGate from "./send-gate.js";
 import { ChannelStore } from "./store.js";
 import { createListChannelsTool } from "./tools/list-channels.js";
 import { createSendMessageToChannelTool } from "./tools/send-message-to-channel.js";
@@ -587,6 +588,8 @@ const handler: MomHandler = {
 			log.logWarning(`[steer] handleSteer called but awareness not running`);
 			return;
 		}
+
+		sendGate.markSteer(event.channel);
 
 		// Format the message with timestamp
 		const now = new Date();

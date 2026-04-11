@@ -16,6 +16,7 @@ import { Type } from "@sinclair/typebox";
 import { basename } from "path";
 import type { PlatformAdapter } from "../adapters/types.js";
 import * as log from "../log.js";
+import * as sendGate from "../send-gate.js";
 
 /** Resolve which adapter can handle a given channel ID */
 export function resolveAdapter(channel: string, adapters: PlatformAdapter[]): PlatformAdapter | undefined {
@@ -61,16 +62,30 @@ export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): Age
 			"Never leave a cross-channel message unacknowledged.",
 		parameters: schema,
 		execute: async (
-			_toolCallId: string,
+			toolCallId: string,
 			{ channel, text, attachments, subject }: { label: string; channel: string; text: string; attachments?: string[]; subject?: string },
 			signal?: AbortSignal,
 		) => {
 			if (signal?.aborted) {
+				sendGate.clearGen(toolCallId);
 				throw new Error("Operation aborted");
+			}
+
+			if (sendGate.shouldSuppress(toolCallId, channel)) {
+				sendGate.clearGen(toolCallId);
+				log.logInfo(`[send_message_to_channel] Suppressed — user message arrived on ${channel} while drafting: ${text.substring(0, 80)}`);
+				return {
+					content: [{
+						type: "text" as const,
+						text: `Message NOT sent — a new user message arrived on channel "${channel}" while you were drafting. Your unsent draft is preserved below so you can reconsider it in light of the new message:\n\n--- unsent draft ---\n${text}\n--- end draft ---\n\nRead the new message, then decide whether to resend as-is, revise, or abandon.`,
+					}],
+					details: undefined,
+				};
 			}
 
 			const adapter = resolveAdapter(channel, adapters);
 			if (!adapter) {
+				sendGate.clearGen(toolCallId);
 				return {
 					content: [{ type: "text" as const, text: `No adapter found for channel "${channel}". Available patterns: numeric (Telegram), C/D/G prefix (Slack), email-{address} (Email).` }],
 					details: undefined,
@@ -86,6 +101,7 @@ export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): Age
 
 				const ts = await adapter.postMessage(channel, text, attachmentObjects, subject);
 				adapter.logBotResponse(channel, text, ts);
+				sendGate.clearGen(toolCallId);
 
 				const attInfo = attachmentObjects?.length ? ` with ${attachmentObjects.length} attachment(s)` : "";
 				log.logInfo(`[send_message_to_channel] Sent to ${adapter.name}:${channel}${attInfo}: ${text.substring(0, 80)}`);
@@ -95,6 +111,7 @@ export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): Age
 					details: undefined,
 				};
 			} catch (err) {
+				sendGate.clearGen(toolCallId);
 				const errMsg = err instanceof Error ? err.message : String(err);
 				log.logWarning(`[send_message_to_channel] Failed to send to ${adapter.name}:${channel}`, errMsg);
 				return {

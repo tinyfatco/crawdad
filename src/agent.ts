@@ -22,6 +22,7 @@ import * as log from "./log.js";
 import { resolveModel, resolveApiKey, registerFireworksProvider } from "./model-config.js";
 import { resolveOpenAIOverlay } from "./openai-overlay.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
+import * as sendGate from "./send-gate.js";
 import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
@@ -658,6 +659,8 @@ function createRunner(
 				ctx.emitContentBlock?.({ type: "text_delta", delta: ame.delta });
 			} else if (ame.type === "thinking_delta") {
 				ctx.emitContentBlock?.({ type: "thinking_delta", delta: ame.delta });
+			} else if (ame.type === "toolcall_start" && ame.toolName === "send_message_to_channel" && ame.id) {
+				sendGate.markGenStart(ame.id);
 			}
 		} else if (event.type === "message_start") {
 			const agentEvent = event as AgentEvent & { type: "message_start" };
