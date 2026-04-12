@@ -1162,18 +1162,44 @@ function createRunner(
 				throw new Error(`Context too small to compact (${log.formatTokens(info.contextTokens)} tokens, minimum ${log.formatTokens(MIN_COMPACT_TOKENS)})`);
 			}
 
-			// Archive before compacting
-			await archiveContext(contextFile);
-
+			// Run compaction — this generates the summary and updates
+			// agent.messages in memory with the compacted view
 			const result = await getSession().compact(instructions);
 
-			// Rewrite context.jsonl with only the compacted entries.
-			// The pre-compaction content was already archived above.
-			(getSessionManager() as any)._rewriteFile();
+			// Capture the compacted messages before we tear down the session
+			const compactedMessages = [...currentSession.messages];
+
+			// Archive the full pre-compaction file to history/
+			await archiveContext(contextFile);
+
+			// Truncate context.jsonl (same as /clear)
+			writeFileSync(contextFile, "", "utf-8");
+
+			// Reset in-memory state (same as /clear)
+			unsubscribeSession?.();
+			unsubscribeSession = null;
+			agent.replaceMessages([]);
+			sessionManager = null;
+			session = null;
+
+			// Re-open SessionManager on the empty file — writes fresh session header
+			const freshSm = getSessionManager();
+
+			// Replay the compacted messages into the fresh file via normal append path.
+			// buildSessionContext() produces AgentMessage[] but all compacted messages
+			// are standard Message objects (user/assistant turns + compaction summary).
+			for (const msg of compactedMessages) {
+				freshSm.appendMessage(msg as Parameters<typeof freshSm.appendMessage>[0]);
+			}
+
+			// Restore in-memory agent state to match the file
+			agent.replaceMessages(compactedMessages);
+
+			log.logInfo(`[awareness] Context compacted: ${messagesBefore} → ${compactedMessages.length} messages, file rotated`);
 
 			return {
 				messagesBefore,
-				messagesAfter: currentSession.messages.length,
+				messagesAfter: compactedMessages.length,
 				tokensBefore: result.tokensBefore,
 			};
 		},
