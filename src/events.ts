@@ -1,5 +1,5 @@
 import { Cron } from "croner";
-import { existsSync, type FSWatcher, mkdirSync, statSync, unlinkSync, watch } from "fs";
+import { existsSync, type FSWatcher, mkdirSync, readFileSync, statSync, unlinkSync, watch, writeFileSync } from "fs";
 import { readFile, readdir } from "fs/promises";
 import { join } from "path";
 import type { MomEvent as MomIncomingEvent, PlatformAdapter } from "./adapters/types.js";
@@ -322,8 +322,8 @@ export class EventsWatcher {
 		try {
 			const stat = statSync(filePath);
 			if (stat.mtimeMs < this.startTime) {
-				log.logInfo(`Stale immediate event, deleting: ${filename}`);
-				this.deleteFile(filename);
+				log.logInfo(`Stale immediate event, expiring: ${filename}`);
+				this.completeFile(filename, "expired");
 				return;
 			}
 		} catch {
@@ -348,9 +348,9 @@ export class EventsWatcher {
 				this.execute(filename, event);
 				return;
 			}
-			// Too old — discard
-			log.logInfo(`One-shot event ${Math.round(ageMs / 1000)}s past due (beyond grace window), deleting: ${filename}`);
-			this.deleteFile(filename);
+			// Too old — mark expired
+			log.logInfo(`One-shot event ${Math.round(ageMs / 1000)}s past due (beyond grace window), expiring: ${filename}`);
+			this.completeFile(filename, "expired");
 			return;
 		}
 
@@ -480,13 +480,13 @@ export class EventsWatcher {
 		}
 
 		if (enqueued && deleteAfter) {
-			// Delete file after successful enqueue (immediate and one-shot)
-			this.deleteFile(filename);
+			// Move to completed/ after successful enqueue (immediate and one-shot)
+			this.completeFile(filename, "fired");
 		} else if (!enqueued) {
 			log.logWarning(`Event queue full, discarded: ${filename}`);
-			// Still delete immediate/one-shot even if discarded
+			// Still remove immediate/one-shot even if discarded
 			if (deleteAfter) {
-				this.deleteFile(filename);
+				this.completeFile(filename, "expired");
 			}
 		}
 	}
@@ -501,6 +501,44 @@ export class EventsWatcher {
 				log.logWarning(`Failed to delete event file: ${filename}`, String(err));
 			}
 		}
+		this.knownFiles.delete(filename);
+	}
+
+	/**
+	 * Move a fired/expired event to events/completed/ with metadata.
+	 * Provides an audit trail instead of silent deletion.
+	 */
+	private completeFile(filename: string, outcome: "fired" | "expired"): void {
+		const filePath = join(this.eventsDir, filename);
+		const completedDir = join(this.eventsDir, "completed");
+
+		try {
+			// Read the original event
+			const content = readFileSync(filePath, "utf-8");
+			const data = JSON.parse(content);
+
+			// Add completion metadata
+			data._completedAt = new Date().toISOString();
+			data._outcome = outcome;
+
+			// Ensure completed/ directory exists
+			if (!existsSync(completedDir)) {
+				mkdirSync(completedDir, { recursive: true });
+			}
+
+			// Write to completed/
+			writeFileSync(join(completedDir, filename), JSON.stringify(data, null, 2), "utf-8");
+
+			// Remove the original
+			unlinkSync(filePath);
+			log.logInfo(`Event ${outcome}: ${filename} → completed/`);
+		} catch (err) {
+			// Fall back to plain delete if anything goes wrong
+			const msg = err instanceof Error ? err.message : String(err);
+			log.logWarning(`completeFile failed for ${filename} (falling back to delete): ${msg}`);
+			try { unlinkSync(filePath); } catch {}
+		}
+
 		this.knownFiles.delete(filename);
 	}
 
