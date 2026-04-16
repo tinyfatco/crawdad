@@ -28,6 +28,7 @@ import { Gateway } from "./gateway.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
+import { McpBridge } from "./mcp-client/bridge.js";
 import { createListChannelsTool } from "./tools/list-channels.js";
 import { createSendMessageToChannelTool } from "./tools/send-message-to-channel.js";
 import { createTuneInTool } from "./tools/tune-in.js";
@@ -493,6 +494,23 @@ adapters.push(tickAdapter);
 	}
 }
 
+// ============================================================================
+// MCP Client Bridge — connect to remote MCP servers (Emdash, etc.)
+// ============================================================================
+
+const mcpBridge = new McpBridge(workingDir);
+{
+	const t = performance.now();
+	await mcpBridge.connect();
+	const bridgeTools = mcpBridge.tools();
+	if (bridgeTools.length > 0) {
+		log.logInfo(`[perf] MCP bridge connected (${bridgeTools.length} tools): ${(performance.now() - t).toFixed(0)}ms`);
+		for (const summary of mcpBridge.serverSummary()) {
+			log.logInfo(`[mcp-client] ${summary}`);
+		}
+	}
+}
+
 // Seed TICK.md template on first boot if it doesn't exist (agent-editable after).
 {
 	const tickFile = join(workingDir, "TICK.md");
@@ -542,6 +560,7 @@ function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstruc
 				awarenessDir,
 				onTuneOut: () => (tickAdapter as unknown as TickAdapter).stopTicking(),
 			}),
+			...mcpBridge.tools(),
 		];
 
 		const runner = getOrCreateRunner(
@@ -1243,6 +1262,7 @@ log.logInfo(`[perf] TOTAL STARTUP: ${(performance.now() - T_BOOT).toFixed(0)}ms`
 // Handle shutdown
 process.on("SIGINT", () => {
 	log.logInfo("Shutting down...");
+	mcpBridge.disconnect().catch(() => {});
 	eventsWatcher.stop();
 	gateway.stop();
 	for (const adapter of adapters) {
@@ -1253,6 +1273,7 @@ process.on("SIGINT", () => {
 
 process.on("SIGTERM", () => {
 	log.logInfo("Shutting down...");
+	mcpBridge.disconnect().catch(() => {});
 	eventsWatcher.stop();
 	gateway.stop();
 	for (const adapter of adapters) {
