@@ -499,16 +499,22 @@ adapters.push(tickAdapter);
 // ============================================================================
 
 const mcpBridge = new McpBridge(workingDir);
+// Fire-and-forget — never block startup on remote MCP connections.
+// Tools attach when connect() resolves. If Emdash or any other server
+// is unreachable, the agent still boots and handles webhooks normally.
 {
 	const t = performance.now();
-	await mcpBridge.connect();
-	const bridgeTools = mcpBridge.tools();
-	if (bridgeTools.length > 0) {
-		log.logInfo(`[perf] MCP bridge connected (${bridgeTools.length} tools): ${(performance.now() - t).toFixed(0)}ms`);
-		for (const summary of mcpBridge.serverSummary()) {
-			log.logInfo(`[mcp-client] ${summary}`);
+	mcpBridge.connect().then(() => {
+		const bridgeTools = mcpBridge.tools();
+		if (bridgeTools.length > 0) {
+			log.logInfo(`[perf] MCP bridge connected (${bridgeTools.length} tools): ${(performance.now() - t).toFixed(0)}ms`);
+			for (const summary of mcpBridge.serverSummary()) {
+				log.logInfo(`[mcp-client] ${summary}`);
+			}
 		}
-	}
+	}).catch((err) => {
+		log.logWarning(`[mcp-client] bridge connect failed (non-fatal)`, err instanceof Error ? err.message : String(err));
+	});
 }
 
 // Seed TICK.md template on first boot if it doesn't exist (agent-editable after).
