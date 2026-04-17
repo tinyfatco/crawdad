@@ -549,8 +549,18 @@ interface Awareness {
 
 let awareness: Awareness | null = null;
 
-function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstructions: string): Awareness {
+async function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstructions: string): Promise<Awareness> {
 	if (!awareness) {
+		// Wait (with bounded timeout) for the MCP bridge to finish connecting so
+		// its tools are present when we build the runner. Runner tools are static
+		// after creation, so missing them here means missing them forever.
+		const BRIDGE_READY_TIMEOUT_MS = 15_000;
+		const timeout = new Promise<void>((resolve) => setTimeout(resolve, BRIDGE_READY_TIMEOUT_MS));
+		const bridgeStart = performance.now();
+		await Promise.race([mcpBridge.ready(), timeout]);
+		const bridgeTools = mcpBridge.tools();
+		log.logInfo(`[mcp-client] getAwareness waited ${(performance.now() - bridgeStart).toFixed(0)}ms for bridge, got ${bridgeTools.length} tools`);
+
 		const awarenessDir = join(workingDir, AWARENESS_DIR);
 		const extraTools = [
 			createSendMessageToChannelTool(adapters),
@@ -662,7 +672,7 @@ const handler: MomHandler = {
 
 	async handleEvent(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<void> {
 		// Ensure awareness is initialized (needed for /context and other commands)
-		const state = getAwareness(event.channel, platform, platform.formatInstructions);
+		const state = await getAwareness(event.channel, platform, platform.formatInstructions);
 
 		// Intercept slash commands before spinning up the agent
 		const trimmed = event.text.trim();

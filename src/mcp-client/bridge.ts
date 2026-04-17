@@ -16,12 +16,28 @@ export class McpBridge {
 	private servers: ConnectedServer[] = [];
 	private workspaceDir: string;
 	private connected = false;
+	private connectPromise: Promise<void> | null = null;
 
 	constructor(workspaceDir: string) {
 		this.workspaceDir = workspaceDir;
 	}
 
+	/**
+	 * Returns a promise that resolves when the ongoing connect() finishes
+	 * (success or per-server failures — never rejects). If connect() has
+	 * not been called yet, returns a resolved promise.
+	 */
+	ready(): Promise<void> {
+		return this.connectPromise ?? Promise.resolve();
+	}
+
 	async connect(): Promise<void> {
+		if (this.connectPromise) return this.connectPromise;
+		this.connectPromise = this.doConnect();
+		return this.connectPromise;
+	}
+
+	private async doConnect(): Promise<void> {
 		if (this.connected) return;
 
 		const configs = loadMcpConfigs(this.workspaceDir);
