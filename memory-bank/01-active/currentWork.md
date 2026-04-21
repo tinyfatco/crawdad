@@ -1,6 +1,26 @@
 # Current Work
 
-**Last updated:** 2026-03-21
+**Last updated:** 2026-04-21
+
+## 2026-04-21 — Awareness pub/sub refactor (branch: feat/pubsub-awareness)
+
+Web chat had three parallel pipes carrying the same tokens:
+(1) per-turn SSE from `/web/chat`,
+(2) 500ms file-poll SSE from `/awareness/stream`,
+(3) Worker re-framing of #1.
+
+Collapsed to one. `src/awareness-bus.ts` is a singleton EventEmitter.
+Every writer to `awareness/context.jsonl` publishes to the bus
+(commands.ts, presence.ts, adapters/operator.ts). `gateway.ts`'s
+`/awareness/stream` subscribes to the bus and uses `fs.watch` as a
+backstop for pi-coding-agent's SessionManager (which we don't control).
+The old 500ms `setInterval` + `statSync` loop is gone.
+
+Web adapter (`adapters/web.ts`) is now POST-and-200. No SSE. Agent
+output reaches the UI through the awareness stream — the single source
+of truth. ChatPane/useWebChat simplified to match.
+
+Zip is running this branch via `troublemaker_branch` override.
 
 ## Status: Self-Hosted Runtime Is Real
 
