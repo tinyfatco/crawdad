@@ -17,6 +17,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "fs";
 import { copyFile, mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import type { ChannelInfo, MomContext, UserInfo } from "./adapters/types.js";
+import { awarenessBus } from "./awareness-bus.js";
 import { MomSettingsManager, type VerbosityLevel } from "./context.js";
 import * as log from "./log.js";
 import { resolveModel, resolveApiKey, registerFireworksProvider } from "./model-config.js";
@@ -27,6 +28,42 @@ import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 import { wasYielded, resetYield } from "./tools/yield-no-action.js";
 import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
+
+/**
+ * SessionManager is pi-coding-agent's writer to context.jsonl. We don't control
+ * its source, so we wrap its one-and-only persistence funnel (`_persist`) to
+ * publish every written line to the in-process awareness bus. This gives SSE
+ * clients near-zero-latency delivery without polling the filesystem.
+ *
+ * `_persist(entry)` has two branches:
+ *   (a) First time a non-pending entry is being persisted AND flushed is false:
+ *       writes ALL fileEntries to disk, sets flushed = true.
+ *   (b) Flushed is already true: writes the single incoming entry.
+ *
+ * We snapshot `flushed` before the call and diff to determine which branch ran.
+ */
+function wrapSessionManagerForAwarenessBus(sm: SessionManager): void {
+	const anySm = sm as unknown as {
+		_persist: (entry: unknown) => void;
+		fileEntries: unknown[];
+		flushed: boolean;
+	};
+	const original = anySm._persist.bind(sm);
+	anySm._persist = (entry: unknown) => {
+		const wasFlushed = anySm.flushed;
+		original(entry);
+		if (!anySm.flushed) return; // still buffering; nothing hit disk
+		if (!wasFlushed) {
+			// Just flushed the full buffer — publish every buffered entry.
+			for (const e of anySm.fileEntries) {
+				awarenessBus.publish(JSON.stringify(e));
+			}
+		} else {
+			// Normal append path — publish just this entry.
+			awarenessBus.publish(JSON.stringify(entry));
+		}
+	};
+}
 
 export interface PendingMessage {
 	userName: string;
@@ -501,6 +538,7 @@ function createRunner(
 		if (!sessionManager) {
 			const t = performance.now();
 			sessionManager = SessionManager.open(contextFile, awarenessDir);
+			wrapSessionManagerForAwarenessBus(sessionManager);
 			log.logInfo(`[perf] SessionManager.open: ${(performance.now() - t).toFixed(0)}ms`);
 		}
 		return sessionManager;
