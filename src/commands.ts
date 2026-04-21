@@ -16,6 +16,7 @@ import { findModel, listModels, resolveModel } from "./model-config.js";
 import * as log from "./log.js";
 import { formatUsageSummary, formatTokens } from "./log.js";
 import { AuthStorage } from "@mariozechner/pi-coding-agent";
+import { awarenessBus } from "./awareness-bus.js";
 
 /**
  * Pending input — when a command needs the user's next message (e.g. /login),
@@ -60,8 +61,10 @@ function logSystemAction(workingDir: string, channelLabel: string, text: string)
 			content: [{ type: "text", text: `[${new Date().toISOString()}] [${channelLabel}] [system]: ${text}` }],
 		},
 	};
+	const line = JSON.stringify(entry);
 	try {
-		appendFileSync(contextFile, JSON.stringify(entry) + "\n");
+		appendFileSync(contextFile, line + "\n");
+		awarenessBus.publish(line);
 	} catch {
 		// awareness dir may not exist yet on first boot
 	}

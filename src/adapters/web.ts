@@ -6,13 +6,19 @@ import type { ChannelStore } from "../store.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 
 // ============================================================================
-// WebAdapter — HTTP POST with SSE response (for web chat)
+// WebAdapter — POST-and-go (no SSE).
+//
+// The browser POSTs a message. We enqueue it into the handler and return 200
+// immediately. The agent's response flows through the awareness stream
+// (awareness/context.jsonl + awarenessBus), which the browser is already
+// subscribed to via GET /awareness/stream.
+//
+// This replaces an earlier design where web chat opened its own SSE response
+// carrying token-level deltas. That path double-framed the same tokens (once
+// here, once from the awareness stream), re-framed them again at the Worker,
+// and relied on a 500ms file poll. Now: one writer, one stream, no surprises.
 // ============================================================================
 
-/**
- * Inbound web chat message from the orchestrator.
- * The orchestrator translates browser messages to this format.
- */
 interface WebChatPayload {
 	message: string;
 	channelId?: string;
@@ -20,38 +26,6 @@ interface WebChatPayload {
 
 export interface WebAdapterConfig {
 	workingDir: string;
-}
-
-/**
- * SSE writer — sends events to the HTTP response as Server-Sent Events.
- */
-class SSEWriter {
-	private res: ServerResponse;
-	private closed = false;
-
-	constructor(res: ServerResponse) {
-		this.res = res;
-	}
-
-	send(event: Record<string, unknown>): void {
-		if (this.closed) return;
-		try {
-			this.res.write(`data: ${JSON.stringify(event)}\n\n`);
-		} catch {
-			this.closed = true;
-		}
-	}
-
-	done(): void {
-		if (this.closed) return;
-		this.closed = true;
-		try {
-			this.res.write("data: [DONE]\n\n");
-			this.res.end();
-		} catch {
-			// Already closed
-		}
-	}
 }
 
 export class WebAdapter implements PlatformAdapter {
@@ -64,8 +38,6 @@ Keep responses concise and helpful.`;
 
 	private workingDir: string;
 	private handler!: MomHandler;
-	/** Per-channel SSE writer — set in dispatch, read in createContext */
-	private pendingWriters = new Map<string, SSEWriter>();
 
 	constructor(config: WebAdapterConfig) {
 		this.workingDir = config.workingDir;
@@ -99,90 +71,60 @@ Keep responses concise and helpful.`;
 			try {
 				payload = JSON.parse(body);
 			} catch {
-				res.writeHead(400);
-				res.end("Invalid JSON");
+				res.writeHead(400, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Invalid JSON" }));
 				return;
 			}
 
 			if (!payload.message || typeof payload.message !== "string" || !payload.message.trim()) {
-				res.writeHead(400);
-				res.end("Missing required field: message");
+				res.writeHead(400, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Missing required field: message" }));
 				return;
 			}
 
-			// Set up SSE response headers — keep connection open for streaming
-			res.writeHead(200, {
-				"Content-Type": "text/event-stream",
-				"Cache-Control": "no-cache",
-				Connection: "keep-alive",
+			const channelId = payload.channelId || "web";
+			const ts = String(Date.now());
+
+			if (this.handler.isRunning(channelId)) {
+				res.writeHead(200, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ ok: true, status: "already_running" }));
+				return;
+			}
+
+			const event: MomEvent = {
+				type: "dm",
+				channel: channelId,
+				ts,
+				user: "web-user",
+				text: payload.message,
+			};
+
+			this.logToFile({
+				date: new Date().toISOString(),
+				ts,
+				channel: `web:${channelId}`,
+				channelId,
+				user: "web-user",
+				userName: "user",
+				text: event.text,
+				attachments: [],
+				isBot: false,
 			});
 
-			const writer = new SSEWriter(res);
-
-			this.processMessage(payload, writer).catch((err) => {
+			// Fire-and-forget — response arrives via the awareness stream.
+			// We ack the POST with 200 as soon as the event is accepted.
+			this.handler.handleEvent(event, this).catch((err) => {
 				log.logWarning("Web chat processing error", err instanceof Error ? err.message : String(err));
-				writer.send({ type: "error", message: err instanceof Error ? err.message : "Unknown error" });
-				writer.done();
 			});
+
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ ok: true, status: "accepted", channelId, ts }));
 		});
 	}
 
 	// ==========================================================================
-	// Message processing
-	// ==========================================================================
-
-	private async processMessage(payload: WebChatPayload, writer: SSEWriter): Promise<void> {
-		const channelId = payload.channelId || "web";
-		const ts = String(Date.now());
-
-		log.logInfo(`[web] Inbound: ${payload.message.substring(0, 80)}`);
-
-		const event: MomEvent = {
-			type: "dm",
-			channel: channelId,
-			ts,
-			user: "web-user",
-			text: payload.message,
-		};
-
-		this.logToFile({
-			date: new Date().toISOString(),
-			ts,
-			channel: `web:${channelId}`,
-			channelId,
-			user: "web-user",
-			userName: "user",
-			text: event.text,
-			attachments: [],
-			isBot: false,
-		});
-
-		if (this.handler.isRunning(channelId)) {
-			log.logInfo(`[web] Already running for ${channelId}`);
-			writer.send({ type: "error", message: "Already processing a message, say stop to cancel" });
-			writer.done();
-			return;
-		}
-
-		// Stash writer so createContext can access it
-		this.pendingWriters.set(channelId, writer);
-
-		// Keep stream active during long tool/thinking phases to avoid idle SSE gaps.
-		const keepalive = setInterval(() => {
-			writer.send({ type: "heartbeat", ts: Date.now() });
-		}, 12000);
-
-		try {
-			await this.handler.handleEvent(event, this);
-		} finally {
-			clearInterval(keepalive);
-			this.pendingWriters.delete(channelId);
-			writer.done();
-		}
-	}
-
-	// ==========================================================================
-	// PlatformAdapter — message operations (mostly no-ops for web)
+	// PlatformAdapter — message operations (all no-ops for web)
+	// Output is rendered from the awareness stream, not posted via platform API.
 	// ==========================================================================
 
 	async postMessage(_channel: string, _text: string): Promise<string> {
@@ -241,25 +183,16 @@ Keep responses concise and helpful.`;
 	}
 
 	enqueueEvent(_event: MomEvent): boolean {
-		// Web chat requires an active SSE connection — can't deliver scheduled events
 		return false;
 	}
 
 	// ==========================================================================
-	// Context creation — streams SSE events back to the HTTP response
-	//
-	// The agent runner calls these methods during execution:
-	// - respond("_→ Label_", false) → tool_start SSE event
-	// - respond("_Error: ..._", false) → tool error
-	// - respond(text, true) → token SSE event (response text)
-	// - respondInThread(*✓ toolName*...) → tool_end SSE event
-	// - setWorking(false) → run_complete SSE event
+	// Context creation — everything is a no-op. The agent's output is written
+	// through the runner → context.jsonl → awarenessBus, which is the only
+	// surface the UI listens to.
 	// ==========================================================================
 
 	createContext(event: MomEvent, _store: ChannelStore, _isEvent?: boolean): MomContext {
-		const writer = this.pendingWriters.get(event.channel);
-		let lastToolId: string | undefined;
-
 		return {
 			message: {
 				text: event.text,
@@ -273,38 +206,15 @@ Keep responses concise and helpful.`;
 			channelName: undefined,
 			channels: [],
 			users: [],
-
-			respond: async (_text: string, _shouldLog = true) => {
-				// No-op — structured content delivered via emitContentBlock
-			},
-
-			sendFinalResponse: async (text: string) => {
-				// Final text — already sent via respond(), no need to re-send
-			},
-
-			respondInThread: async (_text: string) => {
-				// No-op — structured content delivered via emitContentBlock
-			},
-
+			respond: async () => {},
+			sendFinalResponse: async () => {},
+			respondInThread: async () => {},
 			setTyping: async () => {},
-
 			uploadFile: async () => {},
-
-			setWorking: async (working: boolean) => {
-				if (!working && writer) {
-					writer.send({ type: "run_complete", channelId: event.channel });
-				}
-			},
-
+			setWorking: async () => {},
 			deleteMessage: async () => {},
-
-			restartWorking: async () => {
-				// No-op for web — SSE stream is continuous
-			},
-
-			emitContentBlock: (block: { type: string; [key: string]: unknown }) => {
-				if (writer) writer.send(block);
-			},
+			restartWorking: async () => {},
+			emitContentBlock: () => {},
 		};
 	}
 }

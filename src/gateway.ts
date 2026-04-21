@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import type { Socket } from "net";
-import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync, writeFileSync, mkdirSync, watch, type FSWatcher } from "fs";
 import { join, extname, resolve, normalize, dirname } from "path";
 import * as log from "./log.js";
+import { awarenessBus } from "./awareness-bus.js";
 
 /**
  * Gateway — single HTTP server with path-based routing.
@@ -44,8 +45,11 @@ export class Gateway {
 	private workspaceDir: string | null = null;
 	/** Connected SSE clients for /awareness/stream */
 	private awarenessClients = new Set<ServerResponse>();
-	private awarenessWatcher: ReturnType<typeof setInterval> | null = null;
+	/** fs.watch backstop for writes not routed through awarenessBus (e.g. pi-coding-agent SessionManager) */
+	private awarenessWatcher: FSWatcher | null = null;
 	private awarenessFileSize = 0;
+	/** Unsubscribe function for the in-process bus listener */
+	private awarenessBusUnsub: (() => void) | null = null;
 
 	constructor(options: GatewayOptions = {}) {
 		if (options.uiDir && existsSync(options.uiDir)) {
@@ -412,7 +416,7 @@ export class Gateway {
 		res.end(JSON.stringify({ lines: slice, total, offset: startIndex }));
 	}
 
-	/** Handle GET /awareness/stream — SSE endpoint that tails context.jsonl */
+	/** Handle GET /awareness/stream — SSE endpoint driven by awarenessBus + fs.watch backstop */
 	private handleAwarenessStream(_req: IncomingMessage, res: ServerResponse): void {
 		if (!this.workspaceDir) {
 			res.writeHead(500);
@@ -422,15 +426,18 @@ export class Gateway {
 
 		const contextFile = resolve(this.workspaceDir, "awareness/context.jsonl");
 
-		// SSE headers
+		// SSE headers — flush immediately so clients see the stream open
 		res.writeHead(200, {
 			"Content-Type": "text/event-stream",
 			"Cache-Control": "no-cache",
 			"Connection": "keep-alive",
+			"X-Accel-Buffering": "no",
 		});
+		if (typeof (res as any).flushHeaders === "function") {
+			try { (res as any).flushHeaders(); } catch { /* noop */ }
+		}
 
-		// Skip backlog — client fetches recent entries via /awareness/backlog instead.
-		// Just record the current file size so the watcher only sends new lines.
+		// Record current file size so the fs.watch backstop only emits new lines
 		let currentSize = 0;
 		try {
 			const stat = statSync(contextFile);
@@ -439,13 +446,12 @@ export class Gateway {
 			// File doesn't exist yet
 		}
 
-		// Register client
 		this.awarenessClients.add(res);
 
-		// Start the shared file watcher if not already running
-		if (!this.awarenessWatcher) {
+		// Start shared subscriptions if this is the first client
+		if (this.awarenessClients.size === 1) {
 			this.awarenessFileSize = currentSize;
-			this.startAwarenessWatcher(contextFile);
+			this.startAwarenessSubscriptions(contextFile);
 		}
 
 		// Heartbeat to keep connection alive
@@ -453,46 +459,97 @@ export class Gateway {
 			try { res.write(": heartbeat\n\n"); } catch { /* client gone */ }
 		}, 15000);
 
-		// Clean up on disconnect
 		res.on("close", () => {
 			clearInterval(heartbeat);
 			this.awarenessClients.delete(res);
-			if (this.awarenessClients.size === 0 && this.awarenessWatcher) {
-				clearInterval(this.awarenessWatcher);
-				this.awarenessWatcher = null;
+			if (this.awarenessClients.size === 0) {
+				this.stopAwarenessSubscriptions();
 			}
 		});
 	}
 
-	/** Poll context.jsonl for new bytes and push to all connected SSE clients */
-	private startAwarenessWatcher(contextFile: string): void {
-		this.awarenessWatcher = setInterval(() => {
+	/**
+	 * Start the shared in-process bus subscription and fs.watch backstop.
+	 * - awarenessBus: near-zero-latency path for writes routed through the bus
+	 *   (commands.ts, presence.ts, adapters/operator.ts, web chat)
+	 * - fs.watch: OS-push backstop for writes we don't control (pi-coding-agent's
+	 *   SessionManager). Reads delta bytes, emits them to clients.
+	 *
+	 * Both paths write directly to this.awarenessClients; duplicates are avoided
+	 * because fs.watch updates this.awarenessFileSize whenever it emits a line,
+	 * and the bus path also advances the file size (since it was written to disk
+	 * moments earlier). In practice the bus fires first and fs.watch finds no
+	 * new bytes.
+	 */
+	private startAwarenessSubscriptions(contextFile: string): void {
+		// In-process bus
+		this.awarenessBusUnsub = awarenessBus.subscribe((line) => {
+			// Advance size tracker so fs.watch doesn't re-emit the same line
 			try {
 				const stat = statSync(contextFile);
-				const newSize = stat.size;
-				if (newSize <= this.awarenessFileSize) return;
+				this.awarenessFileSize = stat.size;
+			} catch { /* file may not exist yet */ }
+			this.emitAwarenessLine(line);
+		});
 
-				// Read only the new bytes
-				const fd = openSync(contextFile, "r");
-				const buf = Buffer.alloc(newSize - this.awarenessFileSize);
-				readSync(fd, buf, 0, buf.length, this.awarenessFileSize);
-				closeSync(fd);
+		// fs.watch backstop for uncaptured writers
+		try {
+			this.awarenessWatcher = watch(contextFile, { persistent: false }, () => {
+				this.drainAwarenessFile(contextFile);
+			});
+		} catch {
+			// File may not exist yet — retry once the watcher fires on parent dir,
+			// or rely solely on the bus. For the SSE-through-SessionManager case
+			// we need this so try once more after a short delay.
+			setTimeout(() => {
+				try {
+					this.awarenessWatcher = watch(contextFile, { persistent: false }, () => {
+						this.drainAwarenessFile(contextFile);
+					});
+				} catch { /* give up */ }
+			}, 500);
+		}
+	}
 
-				this.awarenessFileSize = newSize;
+	private stopAwarenessSubscriptions(): void {
+		if (this.awarenessBusUnsub) {
+			this.awarenessBusUnsub();
+			this.awarenessBusUnsub = null;
+		}
+		if (this.awarenessWatcher) {
+			this.awarenessWatcher.close();
+			this.awarenessWatcher = null;
+		}
+	}
 
-				const newContent = buf.toString("utf-8");
-				const lines = newContent.split("\n").filter(Boolean);
+	/** Read newly-appended bytes and emit each line to all clients */
+	private drainAwarenessFile(contextFile: string): void {
+		try {
+			const stat = statSync(contextFile);
+			const newSize = stat.size;
+			if (newSize <= this.awarenessFileSize) return;
 
-				for (const line of lines) {
-					const event = `data: ${line}\n\n`;
-					for (const client of this.awarenessClients) {
-						try { client.write(event); } catch { /* client gone, will be cleaned up */ }
-					}
-				}
-			} catch {
-				// File gone or read error — skip this tick
+			const fd = openSync(contextFile, "r");
+			const buf = Buffer.alloc(newSize - this.awarenessFileSize);
+			readSync(fd, buf, 0, buf.length, this.awarenessFileSize);
+			closeSync(fd);
+
+			this.awarenessFileSize = newSize;
+
+			const lines = buf.toString("utf-8").split("\n").filter(Boolean);
+			for (const line of lines) {
+				this.emitAwarenessLine(line);
 			}
-		}, 500);
+		} catch {
+			// Read error — skip
+		}
+	}
+
+	private emitAwarenessLine(line: string): void {
+		const event = `data: ${line}\n\n`;
+		for (const client of this.awarenessClients) {
+			try { client.write(event); } catch { /* client gone, cleaned on close */ }
+		}
 	}
 
 	/** Start listening on the given port */

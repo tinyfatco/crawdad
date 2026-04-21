@@ -14,6 +14,7 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { randomUUID } from "crypto";
 import { join } from "path";
 import * as log from "./log.js";
+import { awarenessBus } from "./awareness-bus.js";
 
 export type PresenceState = "here" | "away";
 export type TickDisposition = "quiet" | "narrating";
@@ -132,7 +133,9 @@ export function appendAwarenessLine(awarenessDir: string, line: string): void {
 				content: [{ type: "text", text: `[${new Date().toISOString()}] [presence] [system]: ${line}` }],
 			},
 		};
-		appendFileSync(contextFile, `${JSON.stringify(entry)}\n`);
+		const serialized = JSON.stringify(entry);
+		appendFileSync(contextFile, `${serialized}\n`);
+		awarenessBus.publish(serialized);
 	} catch (err) {
 		log.logWarning("Failed to append presence awareness line", String(err));
 	}

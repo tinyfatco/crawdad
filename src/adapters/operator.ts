@@ -37,6 +37,7 @@ import { randomUUID } from "crypto";
 import { join } from "path";
 import type { IncomingMessage, ServerResponse } from "http";
 import * as log from "../log.js";
+import { awarenessBus } from "../awareness-bus.js";
 import { MomSettingsManager, type MomVerboseSettings, type VerbosityLevel } from "../context.js";
 import { syncHeartbeatFromSpontaneity } from "../heartbeat-schedule.js";
 import type { ChannelStore } from "../store.js";
@@ -194,8 +195,10 @@ Replies to the operator happen through whatever channel you were already using w
 				],
 			},
 		};
+		const serialized = JSON.stringify(entry);
 		try {
-			appendFileSync(contextFile, JSON.stringify(entry) + "\n");
+			appendFileSync(contextFile, serialized + "\n");
+			awarenessBus.publish(serialized);
 		} catch (err) {
 			log.logWarning(
 				"[operator] Failed to append awareness entry",
