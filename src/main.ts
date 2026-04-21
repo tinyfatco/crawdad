@@ -28,6 +28,7 @@ import { Gateway } from "./gateway.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
+import { McpBridge } from "./mcp-client/bridge.js";
 import { createListChannelsTool } from "./tools/list-channels.js";
 import { createSendMessageToChannelTool } from "./tools/send-message-to-channel.js";
 import { createTuneInTool } from "./tools/tune-in.js";
@@ -493,6 +494,29 @@ adapters.push(tickAdapter);
 	}
 }
 
+// ============================================================================
+// MCP Client Bridge — connect to remote MCP servers (Emdash, etc.)
+// ============================================================================
+
+const mcpBridge = new McpBridge(workingDir);
+// Fire-and-forget — never block startup on remote MCP connections.
+// Tools attach when connect() resolves. If Emdash or any other server
+// is unreachable, the agent still boots and handles webhooks normally.
+{
+	const t = performance.now();
+	mcpBridge.connect().then(() => {
+		const bridgeTools = mcpBridge.tools();
+		if (bridgeTools.length > 0) {
+			log.logInfo(`[perf] MCP bridge connected (${bridgeTools.length} tools): ${(performance.now() - t).toFixed(0)}ms`);
+			for (const summary of mcpBridge.serverSummary()) {
+				log.logInfo(`[mcp-client] ${summary}`);
+			}
+		}
+	}).catch((err) => {
+		log.logWarning(`[mcp-client] bridge connect failed (non-fatal)`, err instanceof Error ? err.message : String(err));
+	});
+}
+
 // Seed TICK.md template on first boot if it doesn't exist (agent-editable after).
 {
 	const tickFile = join(workingDir, "TICK.md");
@@ -525,8 +549,18 @@ interface Awareness {
 
 let awareness: Awareness | null = null;
 
-function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstructions: string): Awareness {
+async function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstructions: string): Promise<Awareness> {
 	if (!awareness) {
+		// Wait (with bounded timeout) for the MCP bridge to finish connecting so
+		// its tools are present when we build the runner. Runner tools are static
+		// after creation, so missing them here means missing them forever.
+		const BRIDGE_READY_TIMEOUT_MS = 15_000;
+		const timeout = new Promise<void>((resolve) => setTimeout(resolve, BRIDGE_READY_TIMEOUT_MS));
+		const bridgeStart = performance.now();
+		await Promise.race([mcpBridge.ready(), timeout]);
+		const bridgeTools = mcpBridge.tools();
+		log.logInfo(`[mcp-client] getAwareness waited ${(performance.now() - bridgeStart).toFixed(0)}ms for bridge, got ${bridgeTools.length} tools`);
+
 		const awarenessDir = join(workingDir, AWARENESS_DIR);
 		const extraTools = [
 			createSendMessageToChannelTool(adapters),
@@ -542,6 +576,7 @@ function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstruc
 				awarenessDir,
 				onTuneOut: () => (tickAdapter as unknown as TickAdapter).stopTicking(),
 			}),
+			...mcpBridge.tools(),
 		];
 
 		const runner = getOrCreateRunner(
@@ -637,7 +672,7 @@ const handler: MomHandler = {
 
 	async handleEvent(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<void> {
 		// Ensure awareness is initialized (needed for /context and other commands)
-		const state = getAwareness(event.channel, platform, platform.formatInstructions);
+		const state = await getAwareness(event.channel, platform, platform.formatInstructions);
 
 		// Intercept slash commands before spinning up the agent
 		const trimmed = event.text.trim();
@@ -1243,6 +1278,7 @@ log.logInfo(`[perf] TOTAL STARTUP: ${(performance.now() - T_BOOT).toFixed(0)}ms`
 // Handle shutdown
 process.on("SIGINT", () => {
 	log.logInfo("Shutting down...");
+	mcpBridge.disconnect().catch(() => {});
 	eventsWatcher.stop();
 	gateway.stop();
 	for (const adapter of adapters) {
@@ -1253,6 +1289,7 @@ process.on("SIGINT", () => {
 
 process.on("SIGTERM", () => {
 	log.logInfo("Shutting down...");
+	mcpBridge.disconnect().catch(() => {});
 	eventsWatcher.stop();
 	gateway.stop();
 	for (const adapter of adapters) {
