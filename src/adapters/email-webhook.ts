@@ -44,6 +44,16 @@ export interface EmailWebhookAdapterConfig {
 	sendUrl: string;
 }
 
+interface ActiveEmailReplyContext {
+	channelId: string;
+	canonicalChannel: string;
+	toAddress: string;
+	subject: string;
+	messageId?: string;
+	references?: string;
+	replyQuote?: EmailReplyQuote;
+}
+
 export class EmailWebhookAdapter implements PlatformAdapter {
 	readonly name = "email";
 	readonly maxMessageLength = 100000; // Email has no real limit
@@ -58,6 +68,8 @@ Keep responses concise and professional. The user will receive one email with yo
 	private handler!: MomHandler;
 	/** Per-channel email metadata for threading (set in processEmail, read in createContext) */
 	private pendingPayloads = new Map<string, EmailPayload>();
+	/** Active reply contexts used by send_message_to_channel to preserve email threading */
+	private activeReplyContexts = new Map<string, ActiveEmailReplyContext>();
 
 	constructor(config: EmailWebhookAdapterConfig) {
 		this.workingDir = config.workingDir;
@@ -219,6 +231,57 @@ Keep responses concise and professional. The user will receive one email with yo
 		return saved;
 	}
 
+	private normalizeEmailAddress(value: string): string {
+		const trimmed = value.trim();
+		const angleMatch = trimmed.match(/<([^>]+)>/);
+		return (angleMatch ? angleMatch[1] : trimmed).toLowerCase();
+	}
+
+	private buildReplySubject(subject: string): string {
+		return subject.startsWith("Re:") ? subject : `Re: ${subject}`;
+	}
+
+	private buildReplyQuote(payload: EmailPayload, fallbackSentAt?: string): EmailReplyQuote | undefined {
+		const body = payload.replyQuote?.body || payload.body;
+		if (!body?.trim()) return undefined;
+		return {
+			body,
+			from: payload.replyQuote?.from || payload.from,
+			sentAt: payload.replyQuote?.sentAt || fallbackSentAt,
+		};
+	}
+
+	private registerActiveReplyContext(channelId: string, payload: EmailPayload, fallbackSentAt: string): ActiveEmailReplyContext {
+		const toAddress = this.normalizeEmailAddress(payload.from);
+		const canonicalChannel = `email-${toAddress}`;
+		const context: ActiveEmailReplyContext = {
+			channelId,
+			canonicalChannel,
+			toAddress,
+			subject: payload.subject || "(no subject)",
+			messageId: payload.messageId,
+			references: payload.references,
+			replyQuote: this.buildReplyQuote(payload, fallbackSentAt),
+		};
+		this.activeReplyContexts.set(channelId, context);
+		this.activeReplyContexts.set(canonicalChannel, context);
+		return context;
+	}
+
+	private clearActiveReplyContext(context?: ActiveEmailReplyContext): void {
+		if (!context) return;
+		this.activeReplyContexts.delete(context.channelId);
+		this.activeReplyContexts.delete(context.canonicalChannel);
+	}
+
+	private resolveActiveReplyContext(channel: string): ActiveEmailReplyContext | undefined {
+		const direct = this.activeReplyContexts.get(channel);
+		if (direct) return direct;
+		const emailMatch = channel.match(/^email-(.+)$/);
+		if (!emailMatch) return undefined;
+		return this.activeReplyContexts.get(`email-${this.normalizeEmailAddress(emailMatch[1])}`);
+	}
+
 	// ==========================================================================
 	// PlatformAdapter — message operations (mostly no-ops for email)
 	// ==========================================================================
@@ -230,14 +293,26 @@ Keep responses concise and professional. The user will receive one email with yo
 			throw new Error(`postMessage called with non-email channel: ${channel}`);
 		}
 
-		const toAddress = emailMatch[1];
-		log.logInfo(`[email] Sending outbound to ${toAddress}${attachments?.length ? ` with ${attachments.length} attachment(s)` : ""}`);
+		const replyContext = this.resolveActiveReplyContext(channel);
+		const toAddress = replyContext?.toAddress || this.normalizeEmailAddress(emailMatch[1]);
+		const body = replyContext ? composeEmailReplyBody(text, replyContext.replyQuote) : text;
+		const resolvedSubject = replyContext
+			? (subject || this.buildReplySubject(replyContext.subject))
+			: (subject || "Message from your agent");
+		log.logInfo(`[email] Sending ${replyContext ? "threaded " : ""}outbound to ${toAddress}${attachments?.length ? ` with ${attachments.length} attachment(s)` : ""}`);
 
-		const emailMetadata = {
+		const emailMetadata: Record<string, unknown> = {
 			to: toAddress,
-			subject: subject || "Message from your agent",
-			body: text,
+			subject: resolvedSubject,
+			body,
 		};
+
+		if (replyContext?.messageId) {
+			emailMetadata.in_reply_to = replyContext.messageId;
+			emailMetadata.references = replyContext.references
+				? `${replyContext.references} ${replyContext.messageId}`
+				: replyContext.messageId;
+		}
 
 		let response: Response;
 
@@ -372,6 +447,8 @@ Keep responses concise and professional. The user will receive one email with yo
 		const pendingAttachments: Array<{ filename: string; filePath: string }> = [];
 		let finalText = "";
 		const payload = this.pendingPayloads.get(event.channel);
+		const fallbackSentAt = new Date(Number(event.ts)).toISOString();
+		const activeReplyContext = payload ? this.registerActiveReplyContext(event.channel, payload, fallbackSentAt) : undefined;
 		const emailMeta = {
 			from: event.user,
 			selfEmail: payload?.to?.toLowerCase(), // agent's own address — exclude from reply-all
@@ -380,13 +457,7 @@ Keep responses concise and professional. The user will receive one email with yo
 			inReplyTo: payload?.inReplyTo,
 			references: payload?.references,
 			allRecipients: payload?.allRecipients || [],
-			replyQuote: payload?.replyQuote || (payload?.body
-				? {
-					body: payload.body,
-					from: payload.from,
-					sentAt: new Date(Number(event.ts)).toISOString(),
-				}
-				: undefined),
+			replyQuote: activeReplyContext?.replyQuote,
 		};
 
 		return {
@@ -458,7 +529,11 @@ Keep responses concise and professional. The user will receive one email with yo
 			setWorking: async (working: boolean) => {
 				if (!working) {
 					// Run complete — send the email reply
-					await this.sendEmailReply(emailMeta, finalText, toolLog, pendingAttachments);
+					try {
+						await this.sendEmailReply(emailMeta, finalText, toolLog, pendingAttachments);
+					} finally {
+						this.clearActiveReplyContext(activeReplyContext);
+					}
 				}
 			},
 

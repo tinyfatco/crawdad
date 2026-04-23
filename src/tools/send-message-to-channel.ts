@@ -45,7 +45,7 @@ export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): Age
 		channel: Type.String({ description: "Channel ID to send to (e.g., Telegram chat ID, Slack channel ID, email-user@example.com)" }),
 		text: Type.String({ description: "Message text to send" }),
 		attachments: Type.Optional(Type.Array(Type.String(), { description: "File paths to attach (email only). Each path should be an absolute path to a file on disk." })),
-		subject: Type.Optional(Type.String({ description: "Subject line (email only — ignored for Telegram/Slack/Discord). If omitted for email, a generic default is used." })),
+		subject: Type.Optional(Type.String({ description: "Subject line (email only — ignored for Telegram/Slack/Discord). If omitted while replying inside an active email conversation, the current thread subject is reused." })),
 	});
 
 	return {
@@ -57,6 +57,7 @@ export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): Age
 			"The channel ID determines which platform the message goes to: " +
 			"numeric IDs → Telegram, C/D/G-prefixed → Slack, email-{address} → Email. " +
 			"For email, you can include file attachments (e.g., PDFs, images) and an optional subject line. " +
+			"If you use this during an active email conversation and send back to that same email channel, the adapter preserves reply threading and adds a native-style quoted reply block automatically. " +
 			"IMPORTANT: You MUST send a message whenever a cross-channel message arrives while you are working. " +
 			"Never leave a cross-channel message unacknowledged.",
 		parameters: schema,
