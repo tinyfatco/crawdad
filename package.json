@@ -16,15 +16,18 @@
 	"scripts": {
 		"clean": "rm -rf dist",
 		"patch": "node scripts/patch-agent-loop.js",
+		"typecheck": "tsc --noEmit",
 		"build": "npm run patch && tsc && chmod +x dist/main.js",
 		"dev": "tsc --watch --preserveWatchOutput",
+		"test:awareness-stream": "npx tsx test/awareness-stream.test.ts",
+		"validate:local": "npm run typecheck && npm run build && npm run test:awareness-stream",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {
 		"@anthropic-ai/sandbox-runtime": "0.0.16",
-		"@mariozechner/pi-agent-core": "0.58.4",
-		"@mariozechner/pi-ai": "0.58.4",
-		"@mariozechner/pi-coding-agent": "0.58.4",
+		"@mariozechner/pi-agent-core": "0.64.0",
+		"@mariozechner/pi-ai": "0.64.0",
+		"@mariozechner/pi-coding-agent": "0.64.0",
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@mozilla/readability": "0.6.0",
 		"@sinclair/typebox": "0.34.48",

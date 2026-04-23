@@ -166,7 +166,7 @@ export function registerFireworksProvider(registry: ModelRegistry): void {
 function createWorkspaceModelRegistry(workingDir?: string): ModelRegistry {
 	const authStorage = AuthStorage.create();
 	const modelsJsonPath = workingDir ? join(workingDir, "models.json") : undefined;
-	const registry = new ModelRegistry(authStorage, modelsJsonPath);
+	const registry = ModelRegistry.create(authStorage, modelsJsonPath);
 	registerFireworksProvider(registry);
 	return registry;
 }

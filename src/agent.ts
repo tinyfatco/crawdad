@@ -471,7 +471,7 @@ function createRunner(
 
 	// Create AuthStorage and ModelRegistry
 	const authStorage = AuthStorage.create();
-	const modelRegistry = new ModelRegistry(authStorage, join(workspaceDir, "models.json"));
+	const modelRegistry = ModelRegistry.create(authStorage, join(workspaceDir, "models.json"));
 
 	// Register Fireworks provider
 	registerFireworksProvider(modelRegistry);
@@ -516,7 +516,6 @@ function createRunner(
 		getAgentsFiles: () => ({ agentsFiles: [] }),
 		getSystemPrompt: () => systemPrompt,
 		getAppendSystemPrompt: () => [],
-		getPathMetadata: () => new Map(),
 		extendResources: () => {},
 		reload: async () => {},
 	};

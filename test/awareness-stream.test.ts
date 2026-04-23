@@ -1,8 +1,9 @@
 /**
- * Quick non-interactive test for the awareness stream SSE endpoint.
+ * Quick non-interactive test for the awareness backlog + stream endpoints.
  *
  * Spins up a Gateway with a temp workspace, writes to context.jsonl,
- * and verifies the SSE stream delivers backlog + live updates.
+ * verifies /awareness/backlog returns recent entries, then verifies
+ * /awareness/stream emits only new live updates.
  *
  * Run: npx tsx test/awareness-stream.test.ts
  */
@@ -14,7 +15,7 @@ import http from "http";
 const TEMP_DIR = "/tmp/awareness-stream-test-" + Date.now();
 const AWARENESS_DIR = join(TEMP_DIR, "awareness");
 const CONTEXT_FILE = join(AWARENESS_DIR, "context.jsonl");
-const PORT = 19876;
+let PORT = 0;
 
 // Test data
 const line1 = JSON.stringify({ type: "session", id: "s1", timestamp: "2026-01-01T00:00:00Z" });
@@ -39,6 +40,8 @@ async function run() {
   mkdirSync(AWARENESS_DIR, { recursive: true });
   writeFileSync(CONTEXT_FILE, line1 + "\n" + line2 + "\n");
 
+  PORT = await getFreePort();
+
   // Import and start gateway
   const { Gateway } = await import("../src/gateway.js");
   const gw = new Gateway({ workspaceDir: TEMP_DIR });
@@ -46,22 +49,19 @@ async function run() {
 
   console.log("Test 1: Backlog delivery");
 
-  // Connect to SSE and collect events
-  const events = await collectEvents(2, 3000);
-  assert(events.length >= 2, `got ${events.length} backlog events (expected ≥2)`);
-  assert(events[0].includes('"s1"'), "first event is session s1");
-  assert(events[1].includes('"m1"'), "second event is message m1");
+  const backlog = await fetchBacklog();
+  assert(backlog.lines.length >= 2, `got ${backlog.lines.length} backlog lines (expected ≥2)`);
+  assert(backlog.lines[0]?.includes('"s1"') || false, "first backlog line is session s1");
+  assert(backlog.lines[1]?.includes('"m1"') || false, "second backlog line is message m1");
 
   console.log("\nTest 2: Live update delivery");
 
-  // Start a new SSE connection, skip backlog, then append a new line
-  const livePromise = collectEvents(3, 5000); // 2 backlog + 1 new
-  await sleep(200); // Let connection establish and receive backlog
+  const livePromise = collectEvents(1, 5000);
+  await sleep(200); // Let connection establish before appending new content
   appendFileSync(CONTEXT_FILE, line3 + "\n");
   const liveEvents = await livePromise;
-  assert(liveEvents.length >= 3, `got ${liveEvents.length} total events (expected ≥3)`);
-  const lastEvent = liveEvents[liveEvents.length - 1];
-  assert(lastEvent.includes('"m2"'), "live event contains message m2");
+  assert(liveEvents.length >= 1, `got ${liveEvents.length} live events (expected ≥1)`);
+  assert(liveEvents[0]?.includes('"m2"') || false, "live event contains message m2");
 
   // Cleanup
   await gw.stop();
@@ -69,6 +69,25 @@ async function run() {
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed > 0 ? 1 : 0);
+}
+
+function fetchBacklog(): Promise<{ lines: string[]; total: number; offset: number }> {
+  return new Promise((resolve, reject) => {
+    http.get(`http://localhost:${PORT}/awareness/backlog?limit=50`, (res) => {
+      let body = "";
+      res.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      res.on("end", () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch (err) {
+          reject(err);
+        }
+      });
+      res.on("error", reject);
+    }).on("error", reject);
+  });
 }
 
 function collectEvents(minCount: number, timeoutMs: number): Promise<string[]> {
@@ -80,7 +99,6 @@ function collectEvents(minCount: number, timeoutMs: number): Promise<string[]> {
       let buffer = "";
       res.on("data", (chunk: Buffer) => {
         buffer += chunk.toString();
-        // Parse SSE events from buffer
         const parts = buffer.split("\n\n");
         buffer = parts.pop() || "";
         for (const part of parts) {
@@ -106,6 +124,25 @@ function collectEvents(minCount: number, timeoutMs: number): Promise<string[]> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function getFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer();
+    server.listen(0, () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("Failed to allocate test port")));
+        return;
+      }
+      const port = address.port;
+      server.close((err) => {
+        if (err) reject(err);
+        else resolve(port);
+      });
+    });
+    server.on("error", reject);
+  });
 }
 
 run().catch((err) => {
