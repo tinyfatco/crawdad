@@ -54,21 +54,6 @@ interface ActiveEmailReplyContext {
 	replyQuote?: EmailReplyQuote;
 }
 
-interface LoggedEmailThreadEntry {
-	ts: string;
-	date?: string;
-	channelId?: string;
-	user?: string;
-	text?: string;
-	isBot?: boolean;
-}
-
-interface EmailThreadTurn {
-	body: string;
-	from: string;
-	sentAt?: string;
-}
-
 export class EmailWebhookAdapter implements PlatformAdapter {
 	readonly name = "email";
 	readonly maxMessageLength = 100000; // Email has no real limit
@@ -256,18 +241,6 @@ Keep responses concise and professional. The user will receive one email with yo
 		return subject.startsWith("Re:") ? subject : `Re: ${subject}`;
 	}
 
-	private extractSubjectFromLoggedText(text: string): string | undefined {
-		const match = text.match(/^Subject:\s*(.+)$/m);
-		return match?.[1]?.trim();
-	}
-
-	private normalizeThreadSubject(subject?: string): string {
-		return (subject || "")
-			.trim()
-			.replace(/^(?:\s*(?:re|fwd):)+\s*/i, "")
-			.toLowerCase();
-	}
-
 	private stripEmailLogDecorations(text: string): string {
 		let cleaned = text.replace(/^Subject:\s*.+?(?:\n\n|$)/, "");
 		const attachmentsIndex = cleaned.indexOf("\n\nAttachments saved to disk:\n");
@@ -277,105 +250,9 @@ Keep responses concise and professional. The user will receive one email with yo
 		return cleaned.trim();
 	}
 
-	private resolveLoggedEntrySentAt(entry: LoggedEmailThreadEntry): string | undefined {
-		if (entry.date?.trim()) return entry.date;
-		const tsNum = Number(entry.ts);
-		if (Number.isNaN(tsNum)) return undefined;
-		return new Date(tsNum).toISOString();
-	}
-
-	private buildConversationReplyBody(channelId: string, payload: EmailPayload, currentTs: string): string | undefined {
-		const logPath = join(this.workingDir, "log.jsonl");
-		if (!existsSync(logPath)) return undefined;
-
-		let raw: string;
-		try {
-			raw = readFileSync(logPath, "utf-8");
-		} catch {
-			return undefined;
-		}
-
-		const currentTsNum = Number(currentTs);
-		const channelEntries = raw
-			.split("\n")
-			.map((line) => {
-				if (!line.trim()) return undefined;
-				try {
-					return JSON.parse(line) as LoggedEmailThreadEntry;
-				} catch {
-					return undefined;
-				}
-			})
-			.filter((entry): entry is LoggedEmailThreadEntry => {
-				if (!entry?.channelId || entry.channelId !== channelId || !entry.text) return false;
-				const tsNum = Number(entry.ts);
-				return Number.isNaN(tsNum) ? true : tsNum <= currentTsNum;
-			});
-
-		if (channelEntries.length === 0) return undefined;
-
-		const currentEntry = channelEntries[channelEntries.length - 1];
-		const currentBody = (payload.replyQuote?.body || this.stripEmailLogDecorations(currentEntry.text || payload.body) || payload.body).trim();
-		if (!currentBody) return undefined;
-
-		const currentSubject = this.normalizeThreadSubject(payload.subject);
-		const priorEntries: LoggedEmailThreadEntry[] = [];
-		let pendingBots: LoggedEmailThreadEntry[] = [];
-
-		for (let i = channelEntries.length - 2; i >= 0; i--) {
-			const entry = channelEntries[i];
-			if (!entry.text) continue;
-
-			if (entry.isBot) {
-				pendingBots.unshift(entry);
-				continue;
-			}
-
-			const entrySubject = this.normalizeThreadSubject(this.extractSubjectFromLoggedText(entry.text));
-			if (currentSubject && entrySubject && entrySubject !== currentSubject) {
-				break;
-			}
-
-			priorEntries.unshift(...pendingBots);
-			pendingBots = [];
-			priorEntries.unshift(entry);
-		}
-
-		const turns = priorEntries.reduce<EmailThreadTurn[]>((acc, entry) => {
-			const body = this.stripEmailLogDecorations(entry.text || "");
-			if (!body) return acc;
-			acc.push({
-				body,
-				from: entry.isBot ? payload.to : payload.from,
-				sentAt: this.resolveLoggedEntrySentAt(entry),
-			});
-			return acc;
-		}, []);
-
-		turns.push({
-			body: currentBody,
-			from: payload.from,
-			sentAt: payload.replyQuote?.sentAt || this.resolveLoggedEntrySentAt(currentEntry),
-		});
-
-		if (turns.length === 1) return currentBody;
-
-		let threadBody = turns[0].body;
-		for (let i = 1; i < turns.length; i++) {
-			const previousTurn = turns[i - 1];
-			threadBody = composeEmailReplyBody(turns[i].body, {
-				body: threadBody,
-				from: previousTurn.from,
-				sentAt: previousTurn.sentAt,
-			});
-		}
-
-		return threadBody;
-	}
-
-	private buildReplyQuote(channelId: string, payload: EmailPayload, currentTs: string, fallbackSentAt?: string): EmailReplyQuote | undefined {
-		const body = this.buildConversationReplyBody(channelId, payload, currentTs) || payload.replyQuote?.body || payload.body;
-		if (!body?.trim()) return undefined;
+	private buildReplyQuote(payload: EmailPayload, fallbackSentAt?: string): EmailReplyQuote | undefined {
+		const body = (payload.replyQuote?.body || this.stripEmailLogDecorations(payload.body)).trim();
+		if (!body) return undefined;
 		return {
 			body,
 			from: payload.replyQuote?.from || payload.from,
@@ -394,7 +271,7 @@ Keep responses concise and professional. The user will receive one email with yo
 			subject: payload.subject || "(no subject)",
 			messageId: payload.messageId,
 			references: payload.references,
-			replyQuote: this.buildReplyQuote(channelId, payload, currentTs, fallbackSentAt),
+			replyQuote: this.buildReplyQuote(payload, fallbackSentAt),
 		};
 		this.activeReplyContexts.set(channelId, context);
 		this.activeReplyContexts.set(canonicalChannel, context);
