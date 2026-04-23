@@ -56,10 +56,17 @@ interface ActiveEmailReplyContext {
 
 interface LoggedEmailThreadEntry {
 	ts: string;
+	date?: string;
 	channelId?: string;
 	user?: string;
 	text?: string;
 	isBot?: boolean;
+}
+
+interface EmailThreadTurn {
+	body: string;
+	from: string;
+	sentAt?: string;
 }
 
 export class EmailWebhookAdapter implements PlatformAdapter {
@@ -254,6 +261,13 @@ Keep responses concise and professional. The user will receive one email with yo
 		return match?.[1]?.trim();
 	}
 
+	private normalizeThreadSubject(subject?: string): string {
+		return (subject || "")
+			.trim()
+			.replace(/^(?:\s*(?:re|fwd):)+\s*/i, "")
+			.toLowerCase();
+	}
+
 	private stripEmailLogDecorations(text: string): string {
 		let cleaned = text.replace(/^Subject:\s*.+?(?:\n\n|$)/, "");
 		const attachmentsIndex = cleaned.indexOf("\n\nAttachments saved to disk:\n");
@@ -263,12 +277,11 @@ Keep responses concise and professional. The user will receive one email with yo
 		return cleaned.trim();
 	}
 
-	private formatParticipantLabel(value: string, fallback: string): string {
-		const trimmed = value.trim();
-		const angleMatch = trimmed.match(/^(.*?)(?:\s*<([^>]+)>)\s*$/);
-		if (!angleMatch) return trimmed || fallback;
-		const displayName = angleMatch[1]?.trim().replace(/^"|"$/g, "");
-		return displayName || angleMatch[2]?.trim() || fallback;
+	private resolveLoggedEntrySentAt(entry: LoggedEmailThreadEntry): string | undefined {
+		if (entry.date?.trim()) return entry.date;
+		const tsNum = Number(entry.ts);
+		if (Number.isNaN(tsNum)) return undefined;
+		return new Date(tsNum).toISOString();
 	}
 
 	private buildConversationReplyBody(channelId: string, payload: EmailPayload, currentTs: string): string | undefined {
@@ -305,7 +318,7 @@ Keep responses concise and professional. The user will receive one email with yo
 		const currentBody = (payload.replyQuote?.body || this.stripEmailLogDecorations(currentEntry.text || payload.body) || payload.body).trim();
 		if (!currentBody) return undefined;
 
-		const currentSubject = payload.subject.trim();
+		const currentSubject = this.normalizeThreadSubject(payload.subject);
 		const priorEntries: LoggedEmailThreadEntry[] = [];
 		let pendingBots: LoggedEmailThreadEntry[] = [];
 
@@ -318,7 +331,7 @@ Keep responses concise and professional. The user will receive one email with yo
 				continue;
 			}
 
-			const entrySubject = this.extractSubjectFromLoggedText(entry.text);
+			const entrySubject = this.normalizeThreadSubject(this.extractSubjectFromLoggedText(entry.text));
 			if (currentSubject && entrySubject && entrySubject !== currentSubject) {
 				break;
 			}
@@ -328,22 +341,36 @@ Keep responses concise and professional. The user will receive one email with yo
 			priorEntries.unshift(entry);
 		}
 
-		if (priorEntries.length === 0) return currentBody;
+		const turns = priorEntries.reduce<EmailThreadTurn[]>((acc, entry) => {
+			const body = this.stripEmailLogDecorations(entry.text || "");
+			if (!body) return acc;
+			acc.push({
+				body,
+				from: entry.isBot ? payload.to : payload.from,
+				sentAt: this.resolveLoggedEntrySentAt(entry),
+			});
+			return acc;
+		}, []);
 
-		const senderLabel = this.formatParticipantLabel(payload.from, "User");
-		const agentLabel = this.normalizeEmailAddress(payload.to).split("@")[0] || "Agent";
-		const priorBlocks = priorEntries
-			.map((entry) => {
-				const body = this.stripEmailLogDecorations(entry.text || "");
-				if (!body) return "";
-				const label = entry.isBot ? agentLabel : senderLabel;
-				return `${label}:\n${body}`;
-			})
-			.filter(Boolean);
+		turns.push({
+			body: currentBody,
+			from: payload.from,
+			sentAt: payload.replyQuote?.sentAt || this.resolveLoggedEntrySentAt(currentEntry),
+		});
 
-		if (priorBlocks.length === 0) return currentBody;
+		if (turns.length === 1) return currentBody;
 
-		return `${currentBody}\n\nEarlier in this conversation:\n\n${priorBlocks.join("\n\n")}`;
+		let threadBody = turns[0].body;
+		for (let i = 1; i < turns.length; i++) {
+			const previousTurn = turns[i - 1];
+			threadBody = composeEmailReplyBody(turns[i].body, {
+				body: threadBody,
+				from: previousTurn.from,
+				sentAt: previousTurn.sentAt,
+			});
+		}
+
+		return threadBody;
 	}
 
 	private buildReplyQuote(channelId: string, payload: EmailPayload, currentTs: string, fallbackSentAt?: string): EmailReplyQuote | undefined {
