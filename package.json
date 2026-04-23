@@ -25,9 +25,9 @@
 	},
 	"dependencies": {
 		"@anthropic-ai/sandbox-runtime": "0.0.16",
-		"@mariozechner/pi-agent-core": "0.69.0",
-		"@mariozechner/pi-ai": "0.69.0",
-		"@mariozechner/pi-coding-agent": "0.69.0",
+		"@mariozechner/pi-agent-core": "0.70.0",
+		"@mariozechner/pi-ai": "0.70.0",
+		"@mariozechner/pi-coding-agent": "0.70.0",
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@mozilla/readability": "0.6.0",
 		"typebox": "1.1.24",

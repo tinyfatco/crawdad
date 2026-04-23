@@ -126,7 +126,7 @@ async function handleModelCommand(
 		let response = `*Current model:* ${model.provider}/${model.id}\n\n`;
 		response += `Use \`/model <name>\` to switch. Examples:\n`;
 		response += `\`/model claude-sonnet-4-6\`\n`;
-		response += `\`/model gpt-5.1\`\n`;
+		response += `\`/model gptfive\`\n`;
 		response += `\`/model anthropic/claude-opus-4-6\`\n`;
 
 		await platform.postMessage(channelId, response);

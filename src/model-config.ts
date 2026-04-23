@@ -37,9 +37,10 @@ const ANTHROPIC_ALIAS_TO_MODEL_ID: Record<string, string> = {
  * Friendly aliases for OpenAI models.
  */
 const OPENAI_ALIAS_TO_MODEL_ID: Record<string, string> = {
-	gpt5: "gpt-5.4",
-	"gpt-5": "gpt-5.4",
-	"gpt-5.4": "gpt-5.4",
+	gpt5: "gpt-5.5",
+	gptfive: "gpt-5.5",
+	"gpt-5": "gpt-5.5",
+	"gpt-5.5": "gpt-5.5",
 	codex: "codex-5.3",
 	"codex-5.3": "codex-5.3",
 };
@@ -253,7 +254,7 @@ export function resolveModel(workingDir?: string, modelRegistry?: ModelRegistry)
 
 /**
  * Find a model by fuzzy matching against provider/id.
- * Accepts formats like "gpt-5.1", "anthropic/claude-sonnet-4-5", "minimax", etc.
+ * Accepts formats like "gpt-5.5", "anthropic/claude-sonnet-4-5", "minimax", etc.
  */
 export function findModel(
 	query: string,
