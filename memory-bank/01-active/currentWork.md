@@ -1,51 +1,49 @@
 # Current Work
 
-**Last updated:** 2026-03-21
+**Last updated:** 2026-04-23
 
-## Status: Self-Hosted Runtime Is Real
+## Fresh priority: Trippa not responding across channels (2026-04-23)
 
-### Native Terminal PTY — Shipped
+Current focus has shifted to a fresh investigation: **Trippa is not responding
+right now on Telegram, Slack, and possibly other channels.**
 
-`node-pty` + WebSocket upgrade handler in `src/terminal.ts`. Gateway registers `UPGRADE /terminal` route. Works standalone and through crawdad-cf. UI hooks updated to connect to gateway port instead of requiring sandbox terminal proxy.
+Treat this as a runtime/delivery investigation first:
+- verify inbound delivery path
+- verify queue/wake behavior
+- verify container/runtime health
+- verify adapter-specific handling vs whole-agent failure
 
-### Ghost — Standalone Agent on Tiny-Bat
+The Zip email quote work stays open, but it is no longer the primary focus.
 
-Proof of concept for self-hosted troublemaker:
-- Git worktree at `~/troublemaker-ghost` (branch `ghost-dev`)
-- Data at `~/ghost-data` with `settings.json` + `MEMORY.md`
-- Running Kimi K2.5 via Fireworks API (`FIREWORKS_API_KEY`)
-- ElevenLabs voice working (voice ID `qA5SHJ9UjGlW2QwXWR7w`)
-- 28ms startup. Terminal, web chat, voice, awareness stream all functional.
-- Auth: SSH tunnel. No tokens needed. Gateway trusts localhost.
-- Heartbeat running — Kimi autonomously doing background work.
+## Zip email quote UX — in active QA, not shipped
 
-### Message Dedup — Fixed After 3 Iterations
+The current focus is making Zip's email replies feel **actually Gmail-native**.
+The first attempt at "full thread quotes" was the wrong shape: it created a
+synthetic `Earlier in this conversation:` recap that looked fabricated and did
+not trigger the Gmail hide/collapse behavior we wanted.
 
-The web chat had a persistent duplication bug: optimistic entries (shown immediately) overlapped with SSE entries (from context.jsonl). Three attempts:
-1. ID dedup on SSE insert — caught reconnections but not optimistic overlap
-2. Clear optimistic on complete — caused visible flash
-3. **Final:** `showStreaming` flag. Streaming entry stays visible until SSE delivers an assistant entry with timestamp >= streaming timestamp, then yields. No flash, no duplication. Voice and cross-channel messages pass through unfiltered.
+### What shipped to git today
 
-### UI Polish — Shipped
+- `483d249` — `fix: make email thread quotes look Gmail-native`
+- `81cffa5` — `refactor: rely on parent-only email quotes`
 
-- Timestamps in meta row (top-left)
-- Flat card styling (2px radius, minimal padding)
-- Assistant cards with background + border
-- Tool calls: `→ label` format matching Telegram/Slack
-- Table formatting for markdown tables
-- Loading screen: `#1a1a1a`, spinner on top, "Waking up..."
+### Current runtime state
 
-### Next P0: Real-Time Awareness Stream
+- Zip is pointed at `feat/gmail-native-quote-chain`
+- Verified through the logs endpoint that Zip was running commit `81cffa5`
 
-SSE polls context.jsonl on an interval — noticeable delay between agent work and UI update. Need `fs.watch` push or sub-second polling for real-time feel. Critical for heartbeat/spontaneity where agent works in background.
+### Current conclusion
 
-## Architecture
+This is **not done yet**.
 
-- **Gateway:** HTTP server on configurable port (default 3002). Serves static UI, REST endpoints, SSE stream, WebSocket upgrade for terminal.
-- **Voice:** Dedicated WebSocket server on port 8766. Vite dev server proxies `/voice/stream` there.
-- **Adapters:** web, telegram, slack, discord, email, heartbeat, web-voice. Each independent.
-- **Sandbox modes:** `host` (bare metal, tools run directly) or `docker:<name>` (isolated).
+What we know now:
+- synthetic visible recap text is bad
+- reconstructing our own thread transcript fights the native UX
+- the likely right direction is to keep thread headers correct and quote only
+  the real parent message, then let Gmail's heuristics do the collapsing
+- more QA is required on Zip before calling the email threading work shipped
 
-## Upstream
+### Next step
 
-Pi agent core `@mariozechner/pi-agent-core@0.58.4`. 1M context for Claude 4.6. Models: Kimi K2.5 (Fireworks), Claude Sonnet 4.6, GPT-5.4 (Codex OAuth — currently rate-limited).
+Research raw Gmail reply behavior more carefully (body/MIME/quote shape), then
+run another live QA loop on Zip.
