@@ -583,7 +583,6 @@ function createRunner(
 		stopReason: "stop",
 		errorMessage: undefined as string | undefined,
 		initialPromptSent: false,
-		systemPromptSet: false,
 	};
 
 	// Activity callback for external watchdog
@@ -736,20 +735,20 @@ function createRunner(
 					log.logWarning("Suppressed leaked debug output from response", text.substring(0, 100));
 				}
 			}
-		} else if (event.type === "auto_compaction_start") {
-			log.logInfo(`Auto-compaction started (reason: ${(event as any).reason})`);
+		} else if (event.type === "compaction_start") {
+			log.logInfo(`Compaction started (reason: ${(event as any).reason})`);
 			queue.enqueue(() => ctx.respond("_Compacting context..._", false), "compaction start");
-		} else if (event.type === "auto_compaction_end") {
+		} else if (event.type === "compaction_end") {
 			const compEvent = event as any;
 			if (compEvent.result) {
-				log.logInfo(`Auto-compaction complete: ${compEvent.result.tokensBefore} tokens compacted`);
+				log.logInfo(`Compaction complete: ${compEvent.result.tokensBefore} tokens compacted`);
 			} else if (compEvent.aborted) {
-				log.logInfo("Auto-compaction aborted");
+				log.logInfo("Compaction aborted");
 			} else {
 				// FAT-279 — surface silent no-ops so ping-pong cases are visible.
 				// result: undefined with no abort means prepareCompaction returned null
 				// (nothing to summarize) or model/apiKey was missing.
-				log.logInfo(`Auto-compaction no-op: ${compEvent.errorMessage || "nothing to compact or missing model/key"}`);
+				log.logInfo(`Compaction no-op: ${compEvent.errorMessage || "nothing to compact or missing model/key"}`);
 			}
 		} else if (event.type === "auto_retry_start") {
 			const retryEvent = event as any;
@@ -800,7 +799,7 @@ function createRunner(
 			if (reloadedSession.messages.length > 0) {
 				const tSan = performance.now();
 				const sanitized = sanitizeMessages(reloadedSession.messages as unknown as Parameters<typeof sanitizeMessages>[0]);
-				agent.replaceMessages(sanitized as unknown as typeof reloadedSession.messages);
+				agent.state.messages = sanitized as unknown as typeof reloadedSession.messages;
 				log.logInfo(`[perf] sanitize+replace (${sanitized.length} msgs): ${(performance.now() - tSan).toFixed(0)}ms`);
 			}
 
@@ -814,13 +813,18 @@ function createRunner(
 
 			log.logInfo(`[perf] total R2 reads: ${(performance.now() - tR2).toFixed(0)}ms`);
 
-			// Set static system prompt (only changes if formatInstructions/sandbox change — effectively never)
 			const currentSession = getSession();
-			if (!runState.systemPromptSet) {
-				const systemPrompt = buildSystemPrompt(workspacePath, sandboxConfig, formatInstructions, agent.state.model);
-				currentSession.agent.setSystemPrompt(systemPrompt);
-				runState.systemPromptSet = true;
+
+			// Re-resolve model each run and keep the session prompt aligned with it.
+			const currentModel = resolveModel(workspaceDir, modelRegistry);
+			const agentModel = agent.state.model;
+			if (!agentModel || currentModel.id !== agentModel.id || currentModel.provider !== agentModel.provider) {
+				log.logInfo(`[awareness] Model changed to ${currentModel.provider}/${currentModel.id}`);
+				agent.state.model = currentModel;
 			}
+
+			const systemPrompt = buildSystemPrompt(workspacePath, sandboxConfig, formatInstructions, agent.state.model);
+			currentSession.agent.state.systemPrompt = systemPrompt;
 
 			// Build dynamic preamble (injected into user message below)
 			settingsManager.reload();
@@ -834,14 +838,6 @@ function createRunner(
 				ctx.channelName,
 				channelVerbosity,
 			);
-
-			// Re-resolve model each run
-			const currentModel = resolveModel(workspaceDir, modelRegistry);
-			const agentModel = agent.state.model;
-			if (agentModel && (currentModel.id !== agentModel.id || currentModel.provider !== agentModel.provider)) {
-				log.logInfo(`[awareness] Model changed to ${currentModel.provider}/${currentModel.id}`);
-				agent.setModel(currentModel);
-			}
 
 			// Set up file upload function
 			setUploadFunction(async (filePath: string, title?: string) => {
@@ -1104,7 +1100,7 @@ function createRunner(
 			if (currentSession.messages.length === 0) {
 				const restored = sm.buildSessionContext();
 				if (restored.messages.length > 0) {
-					agent.replaceMessages(restored.messages);
+					agent.state.messages = restored.messages;
 				}
 			}
 			const messages = currentSession.messages;
@@ -1149,7 +1145,7 @@ function createRunner(
 				const sm = getSessionManager();
 				const restored = sm.buildSessionContext();
 				if (restored.messages.length > 0) {
-					agent.replaceMessages(restored.messages);
+					agent.state.messages = restored.messages;
 				}
 			}
 			const messagesBefore = currentSession.messages.length;
@@ -1177,7 +1173,7 @@ function createRunner(
 			// Reset in-memory state (same as /clear)
 			unsubscribeSession?.();
 			unsubscribeSession = null;
-			agent.replaceMessages([]);
+			agent.state.messages = [];
 			sessionManager = null;
 			session = null;
 
@@ -1192,7 +1188,7 @@ function createRunner(
 			}
 
 			// Restore in-memory agent state to match the file
-			agent.replaceMessages(compactedMessages);
+			agent.state.messages = compactedMessages;
 
 			log.logInfo(`[awareness] Context compacted: ${messagesBefore} → ${compactedMessages.length} messages, file rotated`);
 
@@ -1214,7 +1210,7 @@ function createRunner(
 			if (currentSession.messages.length === 0) {
 				const restored = sm.buildSessionContext();
 				if (restored.messages.length > 0) {
-					agent.replaceMessages(restored.messages);
+					agent.state.messages = restored.messages;
 				}
 			}
 			const messagesCleared = currentSession.messages.length;
@@ -1228,7 +1224,7 @@ function createRunner(
 			// Reset in-memory state — unsubscribe old session to prevent listener leak
 			unsubscribeSession?.();
 			unsubscribeSession = null;
-			agent.replaceMessages([]);
+			agent.state.messages = [];
 			sessionManager = null;
 			session = null;
 
