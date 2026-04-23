@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "http";
 import { basename, join } from "path";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
+import { composeEmailReplyBody, type EmailReplyQuote } from "./email/reply-composer.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 
 // ============================================================================
@@ -23,6 +24,11 @@ interface EmailPayload {
 	references?: string;
 	allRecipients?: string[];
 	emailChannel?: string | null;
+	replyQuote?: {
+		body: string;
+		from?: string;
+		sentAt?: string;
+	};
 	attachments?: Array<{
 		filename: string;
 		content_type: string;
@@ -374,6 +380,13 @@ Keep responses concise and professional. The user will receive one email with yo
 			inReplyTo: payload?.inReplyTo,
 			references: payload?.references,
 			allRecipients: payload?.allRecipients || [],
+			replyQuote: payload?.replyQuote || (payload?.body
+				? {
+					body: payload.body,
+					from: payload.from,
+					sentAt: new Date(Number(event.ts)).toISOString(),
+				}
+				: undefined),
 		};
 
 		return {
@@ -464,7 +477,7 @@ Keep responses concise and professional. The user will receive one email with yo
 	// ==========================================================================
 
 	private async sendEmailReply(
-		meta: { from: string; selfEmail?: string; subject: string; messageId?: string; inReplyTo?: string; references?: string; allRecipients?: string[] },
+		meta: { from: string; selfEmail?: string; subject: string; messageId?: string; inReplyTo?: string; references?: string; allRecipients?: string[]; replyQuote?: EmailReplyQuote },
 		finalText: string,
 		toolLog: string[],
 		attachments: Array<{ filename: string; filePath: string }> = [],
@@ -476,6 +489,9 @@ Keep responses concise and professional. The user will receive one email with yo
 
 		// Build the concise work log
 		const conciseLog = this.buildConciseLog(toolLog);
+		const replyBody = composeEmailReplyBody(finalText, meta.replyQuote);
+		const logModeEnv = (process.env.MOM_EMAIL_LOG_MODE || "none").toLowerCase();
+		const logMode = logModeEnv === "inline" || logModeEnv === "attachment" ? logModeEnv : "none";
 
 		const replySubject = meta.subject.startsWith("Re:") ? meta.subject : `Re: ${meta.subject}`;
 
@@ -495,12 +511,13 @@ Keep responses concise and professional. The user will receive one email with yo
 		const emailMetadata: Record<string, unknown> = {
 			to: toList,
 			subject: replySubject,
-			body: finalText,
+			body: replyBody,
 		};
 
-		// Add log as inline content if present
-		if (conciseLog) {
-			emailMetadata.log = "inline";
+		// Human-facing email defaults to no inline work log.
+		// Operators can opt back in with MOM_EMAIL_LOG_MODE=inline|attachment.
+		if (conciseLog && logMode !== "none") {
+			emailMetadata.log = logMode;
 			emailMetadata.log_content = conciseLog;
 		}
 
