@@ -10,7 +10,7 @@
  */
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import * as log from "../log.js";
 
 /** Shared flag — set by the tool, read by agent.ts after the run. */
@@ -45,8 +45,9 @@ export function createYieldNoActionTool(): AgentTool<any> {
 		parameters: schema,
 		execute: async (
 			_toolCallId: string,
-			{ reason }: { reason: string },
+			params: unknown,
 		) => {
+			const { reason } = params as { reason: string };
 			log.logInfo(`[yield_no_action] ${reason}`);
 			yielded = true;
 			return {

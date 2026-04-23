@@ -12,7 +12,7 @@
  */
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { basename } from "path";
 import type { PlatformAdapter } from "../adapters/types.js";
 import * as log from "../log.js";
@@ -63,9 +63,16 @@ export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): Age
 		parameters: schema,
 		execute: async (
 			_toolCallId: string,
-			{ channel, text, attachments, subject }: { label: string; channel: string; text: string; attachments?: string[]; subject?: string },
+			params: unknown,
 			signal?: AbortSignal,
 		) => {
+			const { channel, text, attachments, subject } = params as {
+				label: string;
+				channel: string;
+				text: string;
+				attachments?: string[];
+				subject?: string;
+			};
 			if (signal?.aborted) {
 				throw new Error("Operation aborted");
 			}

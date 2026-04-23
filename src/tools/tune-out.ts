@@ -9,7 +9,7 @@
  */
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import * as log from "../log.js";
 import { tuneOut } from "../presence.js";
 
@@ -37,7 +37,8 @@ export function createTuneOutTool(deps: TuneOutDeps): AgentTool<any> {
 			"reach you normally. Use this when you're done with whatever you were present for: the " +
 			"task is finished, the window you were watching has closed, or you just want to go quiet.",
 		parameters: schema,
-		execute: async (_toolCallId: string, args: { reason: string }) => {
+		execute: async (_toolCallId: string, params: unknown) => {
+			const args = params as { reason: string };
 			tuneOut(deps.workingDir, deps.awarenessDir, { reason: args.reason });
 			try {
 				deps.onTuneOut();

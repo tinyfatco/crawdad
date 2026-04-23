@@ -9,7 +9,7 @@
  */
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import * as log from "../log.js";
 import {
 	tuneIn,
@@ -74,8 +74,9 @@ export function createTuneInTool(deps: TuneInDeps): AgentTool<any> {
 		parameters: schema,
 		execute: async (
 			_toolCallId: string,
-			args: { reason: string; interval?: TickInterval; disposition?: TickDisposition },
+			params: unknown,
 		) => {
+			const args = params as { reason: string; interval?: TickInterval; disposition?: TickDisposition };
 			const presence = tuneIn(deps.workingDir, deps.awarenessDir, {
 				reason: args.reason,
 				interval: args.interval,

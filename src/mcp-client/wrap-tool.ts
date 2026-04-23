@@ -1,6 +1,6 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import type { TextContent } from "@mariozechner/pi-ai";
-import { Type, type TSchema } from "@sinclair/typebox";
+import { Type, type TSchema } from "typebox";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import * as log from "../log.js";
 
@@ -70,9 +70,11 @@ export function wrapMcpTool(
 		parameters: jsonSchemaToTypebox(tool.inputSchema),
 		execute: async (
 			_toolCallId: string,
-			params: Record<string, unknown>,
+			params: unknown,
+			_signal?: AbortSignal,
+			_onUpdate?: unknown,
 		): Promise<{ content: TextContent[]; details: undefined }> => {
-			const { label: _label, ...toolArgs } = params;
+			const { label: _label, ...toolArgs } = (params as Record<string, unknown>);
 			log.logInfo(`[mcp-client] ${namespacedName}: ${JSON.stringify(toolArgs).substring(0, 200)}`);
 
 			try {
