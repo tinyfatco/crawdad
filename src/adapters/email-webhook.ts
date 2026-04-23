@@ -54,6 +54,14 @@ interface ActiveEmailReplyContext {
 	replyQuote?: EmailReplyQuote;
 }
 
+interface LoggedEmailThreadEntry {
+	ts: string;
+	channelId?: string;
+	user?: string;
+	text?: string;
+	isBot?: boolean;
+}
+
 export class EmailWebhookAdapter implements PlatformAdapter {
 	readonly name = "email";
 	readonly maxMessageLength = 100000; // Email has no real limit
@@ -241,8 +249,105 @@ Keep responses concise and professional. The user will receive one email with yo
 		return subject.startsWith("Re:") ? subject : `Re: ${subject}`;
 	}
 
-	private buildReplyQuote(payload: EmailPayload, fallbackSentAt?: string): EmailReplyQuote | undefined {
-		const body = payload.replyQuote?.body || payload.body;
+	private extractSubjectFromLoggedText(text: string): string | undefined {
+		const match = text.match(/^Subject:\s*(.+)$/m);
+		return match?.[1]?.trim();
+	}
+
+	private stripEmailLogDecorations(text: string): string {
+		let cleaned = text.replace(/^Subject:\s*.+?(?:\n\n|$)/, "");
+		const attachmentsIndex = cleaned.indexOf("\n\nAttachments saved to disk:\n");
+		if (attachmentsIndex !== -1) {
+			cleaned = cleaned.slice(0, attachmentsIndex);
+		}
+		return cleaned.trim();
+	}
+
+	private formatParticipantLabel(value: string, fallback: string): string {
+		const trimmed = value.trim();
+		const angleMatch = trimmed.match(/^(.*?)(?:\s*<([^>]+)>)\s*$/);
+		if (!angleMatch) return trimmed || fallback;
+		const displayName = angleMatch[1]?.trim().replace(/^"|"$/g, "");
+		return displayName || angleMatch[2]?.trim() || fallback;
+	}
+
+	private buildConversationReplyBody(channelId: string, payload: EmailPayload, currentTs: string): string | undefined {
+		const logPath = join(this.workingDir, "log.jsonl");
+		if (!existsSync(logPath)) return undefined;
+
+		let raw: string;
+		try {
+			raw = readFileSync(logPath, "utf-8");
+		} catch {
+			return undefined;
+		}
+
+		const currentTsNum = Number(currentTs);
+		const channelEntries = raw
+			.split("\n")
+			.map((line) => {
+				if (!line.trim()) return undefined;
+				try {
+					return JSON.parse(line) as LoggedEmailThreadEntry;
+				} catch {
+					return undefined;
+				}
+			})
+			.filter((entry): entry is LoggedEmailThreadEntry => {
+				if (!entry?.channelId || entry.channelId !== channelId || !entry.text) return false;
+				const tsNum = Number(entry.ts);
+				return Number.isNaN(tsNum) ? true : tsNum <= currentTsNum;
+			});
+
+		if (channelEntries.length === 0) return undefined;
+
+		const currentEntry = channelEntries[channelEntries.length - 1];
+		const currentBody = (payload.replyQuote?.body || this.stripEmailLogDecorations(currentEntry.text || payload.body) || payload.body).trim();
+		if (!currentBody) return undefined;
+
+		const currentSubject = payload.subject.trim();
+		const priorEntries: LoggedEmailThreadEntry[] = [];
+		let pendingBots: LoggedEmailThreadEntry[] = [];
+
+		for (let i = channelEntries.length - 2; i >= 0; i--) {
+			const entry = channelEntries[i];
+			if (!entry.text) continue;
+
+			if (entry.isBot) {
+				pendingBots.unshift(entry);
+				continue;
+			}
+
+			const entrySubject = this.extractSubjectFromLoggedText(entry.text);
+			if (currentSubject && entrySubject && entrySubject !== currentSubject) {
+				break;
+			}
+
+			priorEntries.unshift(...pendingBots);
+			pendingBots = [];
+			priorEntries.unshift(entry);
+		}
+
+		if (priorEntries.length === 0) return currentBody;
+
+		const senderLabel = this.formatParticipantLabel(payload.from, "User");
+		const agentLabel = this.normalizeEmailAddress(payload.to).split("@")[0] || "Agent";
+		const priorBlocks = priorEntries
+			.map((entry) => {
+				const body = this.stripEmailLogDecorations(entry.text || "");
+				if (!body) return "";
+				const label = entry.isBot ? agentLabel : senderLabel;
+				return `${label}:\n${body}`;
+			})
+			.filter(Boolean);
+
+		if (priorBlocks.length === 0) return currentBody;
+
+		return `${currentBody}\n\nEarlier in this conversation:\n\n${priorBlocks.join("\n\n")}`;
+	}
+
+	private buildReplyQuote(channelId: string, payload: EmailPayload, currentTs: string, fallbackSentAt?: string): EmailReplyQuote | undefined {
+		const body = this.buildConversationReplyBody(channelId, payload, currentTs) || payload.replyQuote?.body || payload.body;
 		if (!body?.trim()) return undefined;
 		return {
 			body,
@@ -251,7 +356,8 @@ Keep responses concise and professional. The user will receive one email with yo
 		};
 	}
 
-	private registerActiveReplyContext(channelId: string, payload: EmailPayload, fallbackSentAt: string): ActiveEmailReplyContext {
+	private registerActiveReplyContext(channelId: string, payload: EmailPayload, currentTs: string): ActiveEmailReplyContext {
+		const fallbackSentAt = new Date(Number(currentTs)).toISOString();
 		const toAddress = this.normalizeEmailAddress(payload.from);
 		const canonicalChannel = `email-${toAddress}`;
 		const context: ActiveEmailReplyContext = {
@@ -261,7 +367,7 @@ Keep responses concise and professional. The user will receive one email with yo
 			subject: payload.subject || "(no subject)",
 			messageId: payload.messageId,
 			references: payload.references,
-			replyQuote: this.buildReplyQuote(payload, fallbackSentAt),
+			replyQuote: this.buildReplyQuote(channelId, payload, currentTs, fallbackSentAt),
 		};
 		this.activeReplyContexts.set(channelId, context);
 		this.activeReplyContexts.set(canonicalChannel, context);
@@ -447,8 +553,7 @@ Keep responses concise and professional. The user will receive one email with yo
 		const pendingAttachments: Array<{ filename: string; filePath: string }> = [];
 		let finalText = "";
 		const payload = this.pendingPayloads.get(event.channel);
-		const fallbackSentAt = new Date(Number(event.ts)).toISOString();
-		const activeReplyContext = payload ? this.registerActiveReplyContext(event.channel, payload, fallbackSentAt) : undefined;
+		const activeReplyContext = payload ? this.registerActiveReplyContext(event.channel, payload, event.ts) : undefined;
 		const emailMeta = {
 			from: event.user,
 			selfEmail: payload?.to?.toLowerCase(), // agent's own address — exclude from reply-all
