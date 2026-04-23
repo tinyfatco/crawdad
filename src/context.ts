@@ -58,6 +58,7 @@ export interface MomSettings {
 	compaction?: Partial<MomCompactionSettings>;
 	retry?: Partial<MomRetrySettings>;
 	spontaneity?: Partial<MomSpontaneitySettings>;
+	shellPath?: string;
 }
 
 const DEFAULT_COMPACTION: MomCompactionSettings = {
@@ -273,6 +274,15 @@ export class MomSettingsManager {
 
 	getShellCommandPrefix(): string | undefined {
 		return undefined;
+	}
+
+	getShellPath(): string | undefined {
+		return this.settings.shellPath;
+	}
+
+	setShellPath(path: string | undefined): void {
+		this.settings.shellPath = path;
+		this.save();
 	}
 
 	getBranchSummarySettings(): { reserveTokens: number } {
