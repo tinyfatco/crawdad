@@ -655,8 +655,8 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 			runner.onActivity = () => {
 				if (awareness) awareness.lastActivity = Date.now();
 			};
-			runner.onUserMessageIncorporated = (text) => sendFreshnessGuard.noteUserMessageIncorporated(text);
 			runner.onAssistantTurnStart = () => sendFreshnessGuard.noteAssistantTurnStart();
+			runner.isOutputFresh = () => sendFreshnessGuard.isCurrentTurnFresh();
 
 			return awareness;
 		})().finally(() => {
@@ -685,20 +685,93 @@ function formatLocalTimestamp(ms = Date.now()): string {
 	return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetMins}`;
 }
 
-function formatSteerMessage(event: MomEvent, adapter: PlatformAdapter): string {
-	const timestamp = formatLocalTimestamp();
+function formatSteerMessage(event: MomEvent, adapter: PlatformAdapter, receivedAt = Date.now()): string {
+	const timestamp = formatLocalTimestamp(receivedAt);
 	const user = adapter.getUser(event.user);
 	const userName = user?.userName || event.user || "unknown";
 	const channelLabel = getChannelLabel(event.channel, adapters);
+	return `[${timestamp}] [${channelLabel}] [${userName}]: ${event.text}`;
+}
 
-	let formattedMessage = `[${timestamp}] [${channelLabel}] [${userName}]: ${event.text}`;
+interface PendingBusyMessage {
+	event: MomEvent;
+	adapter: PlatformAdapter;
+	receivedAt: number;
+	formattedText: string;
+}
 
-	if (awareness && event.channel !== awareness.displayChannelId) {
-		const currentLabel = getChannelDisplayName(awareness.displayChannelId, adapters);
-		formattedMessage += `\n\n---\n[HARNESS] A message arrived from ${channelLabel} while you are attending to ${currentLabel}. Incorporate this update before sending any cross-channel reply. If an immediate acknowledgement is appropriate, use \`send_message_to_channel\` after you have considered this message.`;
+const pendingBusyMessages: PendingBusyMessage[] = [];
+let busyMessageDrainScheduled = false;
+const MAX_BUSY_MESSAGE_BATCH = 20;
+const BUSY_MESSAGE_QUIET_MS = 2500;
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForBusyMessageQuiet(): Promise<void> {
+	while (pendingBusyMessages.length > 0) {
+		const latest = pendingBusyMessages[pendingBusyMessages.length - 1];
+		const remaining = BUSY_MESSAGE_QUIET_MS - (Date.now() - latest.receivedAt);
+		if (remaining <= 0) return;
+		await sleep(Math.min(remaining, BUSY_MESSAGE_QUIET_MS));
+	}
+}
+
+function buildBusyBatchEvent(batch: PendingBusyMessage[]): { event: MomEvent; adapter: PlatformAdapter } {
+	const latest = batch[batch.length - 1];
+	if (batch.length === 1) {
+		return { event: latest.event, adapter: latest.adapter };
 	}
 
-	return formattedMessage;
+	return {
+		adapter: latest.adapter,
+		event: {
+			...latest.event,
+			text: `Recent messages while you were already working:\n${batch.map((item) => item.formattedText).join("\n")}\n\nConsider the full batch before responding. Do not reply to each message separately.`,
+			attachments: latest.event.attachments,
+			files: latest.event.files,
+		},
+	};
+}
+
+function enqueueBusyMessage(event: MomEvent, adapter: PlatformAdapter): void {
+	const receivedAt = Date.now();
+	pendingBusyMessages.push({
+		event,
+		adapter,
+		receivedAt,
+		formattedText: formatSteerMessage(event, adapter, receivedAt),
+	});
+	if (pendingBusyMessages.length > MAX_BUSY_MESSAGE_BATCH) {
+		pendingBusyMessages.splice(0, pendingBusyMessages.length - MAX_BUSY_MESSAGE_BATCH);
+	}
+	sendFreshnessGuard.noteBusyInbound();
+	scheduleBusyMessageDrain();
+}
+
+function scheduleBusyMessageDrain(): void {
+	if (busyMessageDrainScheduled) return;
+	busyMessageDrainScheduled = true;
+
+	void withGlobalRunSlot("busy-message-drain", async () => {
+		while (pendingBusyMessages.length > 0) {
+			await waitForBusyMessageQuiet();
+			const batch = pendingBusyMessages.splice(0);
+			if (batch.length === 0) break;
+
+			const { event, adapter } = buildBusyBatchEvent(batch);
+			log.logInfo(`[steer:${event.channel}] Draining ${batch.length} buffered busy message(s) after quiet window`);
+			await runEventInSlot(event, adapter, false);
+		}
+	}).catch((err) => {
+		log.logWarning(`[steer] Busy message drain failed`, err instanceof Error ? err.message : String(err));
+	}).finally(() => {
+		busyMessageDrainScheduled = false;
+		if (pendingBusyMessages.length > 0) {
+			scheduleBusyMessageDrain();
+		}
+	});
 }
 
 async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<void> {
@@ -784,13 +857,12 @@ const handler: MomHandler = {
 			return;
 		}
 
-		// Busy inbound messages keep pace via soft steering. They do not abort
-		// active tool work; they only make cross-channel sends stale until the
-		// queued message is incorporated into a fresh assistant turn.
-		const formattedMessage = formatSteerMessage(event, adapter);
-		sendFreshnessGuard.noteBusyInbound(formattedMessage);
-		log.logInfo(`[steer:${event.channel}] Soft-steering message into active run: ${event.text.substring(0, 80)}`);
-		awareness.runner.steer(formattedMessage);
+		// Busy inbound messages should not abort active tool work, but they also
+		// should not become a Pi internal queue that keeps streaming stale turns.
+		// Buffer them outside Pi, mark current output stale, then drain one batched
+		// run after the active work finishes and the channel goes briefly quiet.
+		enqueueBusyMessage(event, adapter);
+		log.logInfo(`[steer:${event.channel}] Buffered busy message for quiet-window drain: ${event.text.substring(0, 80)}`);
 	},
 
 	async handleStop(channelId: string, platform: PlatformAdapter): Promise<void> {

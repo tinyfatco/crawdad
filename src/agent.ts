@@ -74,10 +74,10 @@ export interface AgentRunner {
 	clear(): Promise<{ messagesCleared: number }>;
 	/** Called on every substantive event (tool call, LLM token, etc.) during a run */
 	onActivity?: () => void;
-	/** Called when a queued/steered user message is incorporated into context. */
-	onUserMessageIncorporated?: (text: string) => void;
 	/** Called when a new assistant turn starts. */
 	onAssistantTurnStart?: () => void;
+	/** Returns false when newer inbound context makes visible output stale. */
+	isOutputFresh?: () => boolean;
 }
 
 
@@ -371,23 +371,6 @@ function truncate(text: string, maxLen: number): string {
 	return `${text.substring(0, maxLen - 3)}...`;
 }
 
-function extractMessageText(message: { content?: unknown[] }): string {
-	const parts: string[] = [];
-	for (const part of message.content || []) {
-		if (
-			part &&
-			typeof part === "object" &&
-			"type" in part &&
-			(part as { type?: unknown }).type === "text" &&
-			"text" in part &&
-			typeof (part as { text?: unknown }).text === "string"
-		) {
-			parts.push((part as { text: string }).text);
-		}
-	}
-	return parts.join("\n");
-}
-
 function extractToolResultText(result: unknown): string {
 	if (typeof result === "string") {
 		return result;
@@ -584,6 +567,15 @@ function createRunner(
 		return session;
 	};
 
+	const waitForSessionEventQueue = async (currentSession: AgentSession): Promise<void> => {
+		const queue = (currentSession as unknown as { _agentEventQueue?: Promise<void> })._agentEventQueue;
+		if (queue) {
+			await queue.catch((err: unknown) => {
+				log.logWarning(`[awareness] session event queue failed`, err instanceof Error ? err.message : String(err));
+			});
+		}
+	};
+
 	// Mutable per-run state
 	const runState = {
 		ctx: null as MomContext | null,
@@ -608,8 +600,8 @@ function createRunner(
 
 	// Activity callbacks for external watchdog / freshness guards
 	let onActivity: (() => void) | undefined;
-	let onUserMessageIncorporated: ((text: string) => void) | undefined;
 	let onAssistantTurnStart: (() => void) | undefined;
+	let isOutputFresh: (() => boolean) | undefined;
 
 	// Event handler
 	let _eventSeq = 0;
@@ -687,8 +679,6 @@ function createRunner(
 				log.logResponseStart(logCtx);
 			} else if (agentEvent.message.role === "user") {
 				if (runState.initialPromptSent) {
-					const steeredText = extractMessageText(agentEvent.message as { content?: unknown[] });
-					onUserMessageIncorporated?.(steeredText);
 					log.logInfo(`[awareness] Steered message detected, restarting working message`);
 					queue.enqueue(async () => {
 						await ctx.restartWorking();
@@ -741,24 +731,29 @@ function createRunner(
 				}
 
 				const text = textParts.join("\n");
+				const outputFresh = isOutputFresh?.() ?? true;
 
-				for (const thinking of thinkingParts) {
-					log.logThinking(logCtx, thinking);
-					ctx.emitContentBlock?.({ type: "thinking", thinking });
-					const lines = thinking.trim().split("\n").map((l: string) => l.trim()).filter(Boolean);
-					const formatted = "💭 " + lines.map((l: string) => `_${l}_`).join("\n");
-					queue.enqueueMessage(formatted, "main", "thinking main");
-					queue.enqueueMessage(formatted, "thread", "thinking thread", false);
-				}
+				if (!outputFresh) {
+					log.logInfo(`[freshness] Suppressed stale assistant output; newer inbound is buffered for the next quiet-window run`);
+				} else {
+					for (const thinking of thinkingParts) {
+						log.logThinking(logCtx, thinking);
+						ctx.emitContentBlock?.({ type: "thinking", thinking });
+						const lines = thinking.trim().split("\n").map((l: string) => l.trim()).filter(Boolean);
+						const formatted = "💭 " + lines.map((l: string) => `_${l}_`).join("\n");
+						queue.enqueueMessage(formatted, "main", "thinking main");
+						queue.enqueueMessage(formatted, "thread", "thinking thread", false);
+					}
 
-				// Guard: skip text that looks like leaked debug output or serialized objects
-				if (text.trim() && !text.trim().startsWith("(Empty response:") && !text.trim().startsWith("{'content':")) {
-					log.logResponse(logCtx, text);
-					ctx.emitContentBlock?.({ type: "text", text });
-					queue.enqueueMessage(text, "main", "response main");
-					queue.enqueueMessage(text, "thread", "response thread", false);
-				} else if (text.trim()) {
-					log.logWarning("Suppressed leaked debug output from response", text.substring(0, 100));
+					// Guard: skip text that looks like leaked debug output or serialized objects
+					if (text.trim() && !text.trim().startsWith("(Empty response:") && !text.trim().startsWith("{'content':")) {
+						log.logResponse(logCtx, text);
+						ctx.emitContentBlock?.({ type: "text", text });
+						queue.enqueueMessage(text, "main", "response main");
+						queue.enqueueMessage(text, "thread", "response thread", false);
+					} else if (text.trim()) {
+						log.logWarning("Suppressed leaked debug output from response", text.substring(0, 100));
+					}
 				}
 			}
 		} else if (event.type === "compaction_start") {
@@ -989,9 +984,9 @@ function createRunner(
 			const tPrompt = performance.now();
 			await currentSession.prompt(finalUserMessage, {
 				...(imageAttachments.length > 0 ? { images: imageAttachments } : {}),
-				streamingBehavior: "steer" as const,
 			});
-			log.logInfo(`[perf] session.prompt (incl API): ${(performance.now() - tPrompt).toFixed(0)}ms`);
+			await waitForSessionEventQueue(currentSession);
+			log.logInfo(`[perf] session.prompt (incl API + events): ${(performance.now() - tPrompt).toFixed(0)}ms`);
 
 			// If overflow error triggered background compaction+retry, wait for it.
 			if (runState.stopReason === "error") {
@@ -1019,26 +1014,30 @@ function createRunner(
 				if (retryInstruction) {
 					log.logInfo(`[gpt-steering] Planning-only turn detected, retrying with act-now nudge`);
 					log.logInfo(`[gpt-steering] Assistant said: "${assistantText.substring(0, 120)}..."`);
-					await currentSession.prompt(retryInstruction, {
-						streamingBehavior: "steer" as const,
-					});
+					await currentSession.prompt(retryInstruction);
+					await waitForSessionEventQueue(currentSession);
 					log.logInfo(`[gpt-steering] Retry prompt completed`);
 				}
 			}
 
-			// Wait for queued messages
+			// Wait for all queued display/API side effects enqueued by processed events.
+			await waitForSessionEventQueue(currentSession);
 			await queueChain;
 
 			// Handle error case
 			if (runState.stopReason === "error" && runState.errorMessage) {
-				try {
-					const userErrorMsg = `_Sorry, something went wrong: ${runState.errorMessage}_`;
-					ctx.emitContentBlock?.({ type: "error", message: runState.errorMessage });
-					await ctx.sendFinalResponse(userErrorMsg);
-					await ctx.respondInThread(`_Error: ${runState.errorMessage}_`);
-				} catch (err) {
-					const errMsg = err instanceof Error ? err.message : String(err);
-					log.logWarning("Failed to post error message", errMsg);
+				if (!(isOutputFresh?.() ?? true)) {
+					log.logInfo(`[freshness] Suppressed stale error response; buffered inbound will trigger a fresh run`);
+				} else {
+					try {
+						const userErrorMsg = `_Sorry, something went wrong: ${runState.errorMessage}_`;
+						ctx.emitContentBlock?.({ type: "error", message: runState.errorMessage });
+						await ctx.sendFinalResponse(userErrorMsg);
+						await ctx.respondInThread(`_Error: ${runState.errorMessage}_`);
+					} catch (err) {
+						const errMsg = err instanceof Error ? err.message : String(err);
+						log.logWarning("Failed to post error message", errMsg);
+					}
 				}
 			} else {
 				// Final message update
@@ -1054,6 +1053,8 @@ function createRunner(
 				if (wasYielded()) {
 					log.logInfo("yield_no_action — no output posted");
 					resetYield();
+				} else if (!(isOutputFresh?.() ?? true)) {
+					log.logInfo(`[freshness] Suppressed stale final response; buffered inbound will trigger a fresh run`);
 				} else if (finalText.trim() && !finalText.trim().startsWith("(Empty response:") && !finalText.trim().startsWith("{'content':")) {
 					try {
 						// Hard cap: never post more than 40KB (signature blobs can be hundreds of KB)
@@ -1234,11 +1235,11 @@ function createRunner(
 		get onActivity(): (() => void) | undefined { return onActivity; },
 		set onActivity(fn: (() => void) | undefined) { onActivity = fn; },
 
-		get onUserMessageIncorporated(): ((text: string) => void) | undefined { return onUserMessageIncorporated; },
-		set onUserMessageIncorporated(fn: ((text: string) => void) | undefined) { onUserMessageIncorporated = fn; },
-
 		get onAssistantTurnStart(): (() => void) | undefined { return onAssistantTurnStart; },
 		set onAssistantTurnStart(fn: (() => void) | undefined) { onAssistantTurnStart = fn; },
+
+		get isOutputFresh(): (() => boolean) | undefined { return isOutputFresh; },
+		set isOutputFresh(fn: (() => boolean) | undefined) { isOutputFresh = fn; },
 
 		async clear(): Promise<{ messagesCleared: number }> {
 			const contextFile = join(awarenessDir, "context.jsonl");
