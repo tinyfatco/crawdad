@@ -78,6 +78,12 @@ export interface MomHandler {
 	handleEvent(event: MomEvent, adapter: PlatformAdapter, isEvent?: boolean): Promise<void>;
 
 	/**
+	 * Handle a slash command before busy/steer routing.
+	 * Returns true when the message was consumed as a command.
+	 */
+	handleSlashCommand(event: MomEvent, adapter: PlatformAdapter): Promise<boolean>;
+
+	/**
 	 * Steer a message into an active run (ASYNC)
 	 * Called when isRunning() is true — injects the message mid-run
 	 * instead of rejecting with "Already working."

@@ -156,9 +156,9 @@ export class SlackWebhookAdapter extends SlackBase {
 		}
 
 		if (event.type === "app_mention") {
-			this.handleAppMention(event);
+			await this.handleAppMention(event);
 		} else if (event.type === "message") {
-			this.handleMessage(event);
+			await this.handleMessage(event);
 		}
 
 		if (holdConnection) {
@@ -174,7 +174,7 @@ export class SlackWebhookAdapter extends SlackBase {
 		}
 	}
 
-	private handleAppMention(event: SlackEventInner): void {
+	private async handleAppMention(event: SlackEventInner): Promise<void> {
 		if (event.channel.startsWith("D")) return;
 
 		const momEvent: MomEvent = {
@@ -189,6 +189,10 @@ export class SlackWebhookAdapter extends SlackBase {
 		momEvent.attachments = this.logUserMessage(momEvent);
 
 		if (this.handler.resolvePendingInput(event.channel, momEvent.text)) {
+			return;
+		}
+
+		if (await this.handler.handleSlashCommand(momEvent, this)) {
 			return;
 		}
 
@@ -208,7 +212,7 @@ export class SlackWebhookAdapter extends SlackBase {
 		}
 	}
 
-	private handleMessage(event: SlackEventInner): void {
+	private async handleMessage(event: SlackEventInner): Promise<void> {
 		if (!event.text && (!event.files || event.files.length === 0)) return;
 
 		const isDM = event.channel_type === "im";
@@ -232,6 +236,10 @@ export class SlackWebhookAdapter extends SlackBase {
 
 		if (isDM) {
 			if (this.handler.resolvePendingInput(event.channel, momEvent.text)) {
+				return;
+			}
+
+			if (await this.handler.handleSlashCommand(momEvent, this)) {
 				return;
 			}
 

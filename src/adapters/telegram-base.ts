@@ -155,6 +155,10 @@ When mentioning users, use @username format.`;
 			return;
 		}
 
+		if (await this.handler.handleSlashCommand(momEvent, this)) {
+			return;
+		}
+
 		// Check for stop
 		if (text.toLowerCase().trim() === "stop") {
 			if (this.handler.isRunning(chatId)) {

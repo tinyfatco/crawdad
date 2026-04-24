@@ -19,7 +19,7 @@ import { WebVoiceBridgeAdapter, handleWebVoiceSession } from "./adapters/web-voi
 import { handleTerminalUpgrade } from "./terminal.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
-import { handleSlashCommand, resolvePendingInput } from "./commands.js";
+import { handleSlashCommand as executeSlashCommand, resolvePendingInput } from "./commands.js";
 import { MomSettingsManager } from "./context.js";
 import { downloadChannel } from "./download.js";
 import { ChannelPulse } from "./engagement/channel-pulse.js";
@@ -680,6 +680,17 @@ const handler: MomHandler = {
 		return isRunBusy();
 	},
 
+	async handleSlashCommand(event: MomEvent, adapter: PlatformAdapter): Promise<boolean> {
+		const trimmed = event.text.trim();
+		if (!trimmed.startsWith("/")) return false;
+
+		// Slash commands are control-plane messages. Handle them before the
+		// busy/steer path so active ticks or heartbeats don't swallow commands
+		// like /model as ordinary steering text.
+		const state = await getAwareness(event.channel, adapter, adapter.formatInstructions);
+		return executeSlashCommand(trimmed, event.channel, workingDir, adapter, state.runner);
+	},
+
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): void {
 		if (!awareness || !isRunBusy()) {
 			log.logWarning(`[steer] handleSteer called but awareness not running`);
@@ -747,7 +758,7 @@ const handler: MomHandler = {
 			// Intercept slash commands before spinning up the agent
 			const trimmed = event.text.trim();
 			if (trimmed.startsWith("/") && !isEvent) {
-				const handled = await handleSlashCommand(trimmed, event.channel, workingDir, platform, state.runner);
+				const handled = await executeSlashCommand(trimmed, event.channel, workingDir, platform, state.runner);
 				if (handled) return;
 			}
 

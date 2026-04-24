@@ -177,6 +177,10 @@ export class DiscordWebhookAdapter extends DiscordBase {
 			return;
 		}
 
+		if (await this.handler.handleSlashCommand(momEvent, this)) {
+			return;
+		}
+
 		// Check for stop
 		if (content.toLowerCase().trim() === "stop") {
 			if (this.handler.isRunning(channelId)) {
@@ -289,6 +293,10 @@ export class DiscordWebhookAdapter extends DiscordBase {
 		});
 
 		if (this.handler.resolvePendingInput(channelId, text)) {
+			return;
+		}
+
+		if (await this.handler.handleSlashCommand(momEvent, this)) {
 			return;
 		}
 

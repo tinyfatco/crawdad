@@ -39,7 +39,7 @@ export class SlackSocketAdapter extends SlackBase {
 
 	private setupEventHandlers(): void {
 		// Channel @mentions
-		this.socketClient.on("app_mention", ({ event, ack }) => {
+		this.socketClient.on("app_mention", async ({ event, ack }) => {
 			const e = event as {
 				text: string;
 				channel: string;
@@ -86,6 +86,16 @@ export class SlackSocketAdapter extends SlackBase {
 				return;
 			}
 
+			if (this.handler.resolvePendingInput(e.channel, momEvent.text)) {
+				ack();
+				return;
+			}
+
+			if (await this.handler.handleSlashCommand(momEvent, this)) {
+				ack();
+				return;
+			}
+
 			if (momEvent.text.toLowerCase().trim() === "stop") {
 				if (this.handler.isRunning(e.channel)) {
 					this.handler.handleStop(e.channel, this);
@@ -106,7 +116,7 @@ export class SlackSocketAdapter extends SlackBase {
 		});
 
 		// All messages (for logging) + DMs (for triggering) + ambient engagement
-		this.socketClient.on("message", ({ event, ack }) => {
+		this.socketClient.on("message", async ({ event, ack }) => {
 			const e = event as {
 				text?: string;
 				channel: string;
@@ -170,6 +180,16 @@ export class SlackSocketAdapter extends SlackBase {
 			}
 
 			if (isDM) {
+				if (this.handler.resolvePendingInput(e.channel, momEvent.text)) {
+					ack();
+					return;
+				}
+
+				if (await this.handler.handleSlashCommand(momEvent, this)) {
+					ack();
+					return;
+				}
+
 				if (momEvent.text.toLowerCase().trim() === "stop") {
 					if (this.handler.isRunning(e.channel)) {
 						this.handler.handleStop(e.channel, this);
