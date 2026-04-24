@@ -548,9 +548,61 @@ interface Awareness {
 }
 
 let awareness: Awareness | null = null;
+let awarenessInitPromise: Promise<Awareness> | null = null;
+
+interface ActiveRun {
+	label: string;
+	startedAt: number;
+}
+
+let activeRun: ActiveRun | null = null;
+let queuedRunCount = 0;
+let runQueueTail: Promise<void> = Promise.resolve();
+
+function isRunBusy(): boolean {
+	return activeRun !== null || queuedRunCount > 0 || (awareness?.running ?? false);
+}
+
+function describeActiveRun(): string {
+	if (!activeRun) return queuedRunCount > 0 ? `${queuedRunCount} queued run(s)` : "idle";
+	return `${activeRun.label} for ${Date.now() - activeRun.startedAt}ms`;
+}
+
+async function withGlobalRunSlot<T>(label: string, fn: () => Promise<T>): Promise<T> {
+	const previousTail = runQueueTail;
+	let releaseTail!: () => void;
+	runQueueTail = new Promise<void>((resolve) => {
+		releaseTail = resolve;
+	});
+
+	const queuedAt = Date.now();
+	queuedRunCount++;
+	if (activeRun || queuedRunCount > 1) {
+		log.logInfo(`[run-gate] ${label} queued behind ${describeActiveRun()}`);
+	}
+
+	await previousTail.catch(() => {});
+
+	queuedRunCount--;
+	const waitMs = Date.now() - queuedAt;
+	activeRun = { label, startedAt: Date.now() };
+	if (waitMs > 500) {
+		log.logInfo(`[run-gate] ${label} starting after waiting ${waitMs}ms`);
+	}
+
+	try {
+		return await fn();
+	} finally {
+		const durationMs = activeRun ? Date.now() - activeRun.startedAt : 0;
+		log.logInfo(`[run-gate] ${label} released after ${durationMs}ms`);
+		activeRun = null;
+		releaseTail();
+	}
+}
 
 async function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstructions: string): Promise<Awareness> {
-	if (!awareness) {
+	if (!awareness && !awarenessInitPromise) {
+		awarenessInitPromise = (async () => {
 		// Wait (with bounded timeout) for the MCP bridge to finish connecting so
 		// its tools are present when we build the runner. Runner tools are static
 		// after creation, so missing them here means missing them forever.
@@ -597,14 +649,25 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 			displayAdapter: adapter,
 		};
 
-		// Wire activity callback for stuck-run watchdog
-		runner.onActivity = () => {
-			if (awareness) awareness.lastActivity = Date.now();
-		};
+			// Wire activity callback for stuck-run watchdog
+			runner.onActivity = () => {
+				if (awareness) awareness.lastActivity = Date.now();
+			};
+
+			return awareness;
+		})().finally(() => {
+			awarenessInitPromise = null;
+		});
 	}
-	// Update display channel to wherever the latest message came from
-	awareness.displayChannelId = channelId;
-	awareness.displayAdapter = adapter;
+
+	if (awarenessInitPromise) {
+		await awarenessInitPromise;
+	}
+
+	if (!awareness) {
+		throw new Error("Awareness failed to initialize");
+	}
+
 	return awareness;
 }
 
@@ -614,11 +677,11 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 
 const handler: MomHandler = {
 	isRunning(_channelId: string): boolean {
-		return awareness?.running ?? false;
+		return isRunBusy();
 	},
 
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): void {
-		if (!awareness?.running) {
+		if (!awareness || !isRunBusy()) {
 			log.logWarning(`[steer] handleSteer called but awareness not running`);
 			return;
 		}
@@ -673,52 +736,60 @@ const handler: MomHandler = {
 	async handleEvent(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<void> {
 		// Ensure awareness is initialized (needed for /context and other commands)
 		const state = await getAwareness(event.channel, platform, platform.formatInstructions);
+		const label = `${platform.name}:${event.channel}`;
 
-		// Intercept slash commands before spinning up the agent
-		const trimmed = event.text.trim();
-		if (trimmed.startsWith("/") && !isEvent) {
-			const handled = await handleSlashCommand(trimmed, event.channel, workingDir, platform, state.runner);
-			if (handled) return;
-		}
+		return withGlobalRunSlot(label, async () => {
+			// Route display output to the channel for the active run only. Queued runs
+			// must not steal the display pointer from the in-flight run.
+			state.displayChannelId = event.channel;
+			state.displayAdapter = platform;
 
-		// Start run
-		state.running = true;
-		state.lastActivity = Date.now();
-		state.stopRequested = false;
-
-		const channelLabel = getChannelLabel(event.channel, adapters);
-		log.logInfo(`[${platform.name}:${event.channel}] Starting run (${channelLabel}): ${event.text.substring(0, 50)}`);
-
-		try {
-			// Create context from adapter — targets the DISPLAY channel (real channel ID)
-			const ctx = platform.createContext(event, state.store, isEvent);
-
-			// Run the agent
-			await ctx.setTyping(true);
-			await ctx.setWorking(true);
-			const result = await state.runner.run(ctx, state.store);
-			await ctx.setWorking(false);
-
-			if (result.stopReason === "aborted" && state.stopRequested) {
-				if (state.stopMessageTs) {
-					await platform.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
-					state.stopMessageTs = undefined;
-				} else {
-					await platform.postMessage(event.channel, "_Stopped_");
-				}
+			// Intercept slash commands before spinning up the agent
+			const trimmed = event.text.trim();
+			if (trimmed.startsWith("/") && !isEvent) {
+				const handled = await handleSlashCommand(trimmed, event.channel, workingDir, platform, state.runner);
+				if (handled) return;
 			}
-		} catch (err) {
-			const errMsg = err instanceof Error ? err.message : String(err);
-			log.logWarning(
-				`[${platform.name}:${event.channel}] Run error`,
-				errMsg,
-			);
+
+			// Start run
+			state.running = true;
+			state.lastActivity = Date.now();
+			state.stopRequested = false;
+
+			const channelLabel = getChannelLabel(event.channel, adapters);
+			log.logInfo(`[${platform.name}:${event.channel}] Starting run (${channelLabel}): ${event.text.substring(0, 50)}`);
+
 			try {
-				await platform.postMessage(event.channel, `⚠ Run failed: ${errMsg}`);
-			} catch { /* best-effort */ }
-		} finally {
-			state.running = false;
-		}
+				// Create context from adapter — targets the DISPLAY channel (real channel ID)
+				const ctx = platform.createContext(event, state.store, isEvent);
+
+				// Run the agent
+				await ctx.setTyping(true);
+				await ctx.setWorking(true);
+				const result = await state.runner.run(ctx, state.store);
+				await ctx.setWorking(false);
+
+				if (result.stopReason === "aborted" && state.stopRequested) {
+					if (state.stopMessageTs) {
+						await platform.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
+						state.stopMessageTs = undefined;
+					} else {
+						await platform.postMessage(event.channel, "_Stopped_");
+					}
+				}
+			} catch (err) {
+				const errMsg = err instanceof Error ? err.message : String(err);
+				log.logWarning(
+					`[${platform.name}:${event.channel}] Run error`,
+					errMsg,
+				);
+				try {
+					await platform.postMessage(event.channel, `⚠ Run failed: ${errMsg}`);
+				} catch { /* best-effort */ }
+			} finally {
+				state.running = false;
+			}
+		});
 	},
 };
 
@@ -755,9 +826,9 @@ const gateway = new Gateway({
 
 // Status endpoint — reports whether the agent is currently running.
 gateway.registerGet("/status", async (_req, res) => {
-	const running = awareness?.running ? [AWARENESS_DIR] : [];
+	const running = isRunBusy() ? [AWARENESS_DIR] : [];
 	res.writeHead(200, { "Content-Type": "application/json" });
-	res.end(JSON.stringify({ running, idle: running.length === 0 }));
+	res.end(JSON.stringify({ running, idle: running.length === 0, activeRun: describeActiveRun() }));
 });
 
 // Schedule endpoint — returns next wake time for scheduled events.

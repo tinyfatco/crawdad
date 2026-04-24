@@ -1085,7 +1085,13 @@ function createRunner(
 					log.logWarning(`[awareness] steer failed`, err.message);
 				});
 			} else {
-				log.logWarning(`[awareness] steer called but not streaming, ignoring`);
+				// A platform message can arrive after the global run gate is held but
+				// before pi has entered its streaming phase. Preserve the message as a
+				// follow-up instead of dropping it or starting a competing prompt.
+				log.logInfo(`[awareness] steer called before streaming; queueing as follow-up`);
+				s.followUp(text).catch((err: Error) => {
+					log.logWarning(`[awareness] follow-up queue failed`, err.message);
+				});
 			}
 		},
 
