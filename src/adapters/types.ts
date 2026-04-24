@@ -84,9 +84,9 @@ export interface MomHandler {
 	handleSlashCommand(event: MomEvent, adapter: PlatformAdapter): Promise<boolean>;
 
 	/**
-	 * Steer a message into an active run (ASYNC)
-	 * Called when isRunning() is true — injects the message mid-run
-	 * instead of rejecting with "Already working."
+	 * Handle a message that arrives while the runtime is busy.
+	 * Troublemaker hard-preempts the stale run and restarts from the newer
+	 * message instead of appending it as soft steering after the current turn.
 	 */
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): void;
 

@@ -92,6 +92,12 @@ export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): Age
 					filename: basename(filePath),
 				}));
 
+				// Re-check immediately before the external side effect so an interrupt
+				// that arrives during argument prep can suppress stale outbound text.
+				if (signal?.aborted) {
+					throw new Error("Operation aborted");
+				}
+
 				const ts = await adapter.postMessage(channel, text, attachmentObjects, subject);
 				adapter.logBotResponse(channel, text, ts);
 

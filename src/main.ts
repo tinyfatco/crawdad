@@ -540,6 +540,8 @@ interface Awareness {
 	runner: AgentRunner;
 	store: ChannelStore;
 	stopRequested: boolean;
+	/** Set when a newer inbound message supersedes the current generation. */
+	interruptRequested: boolean;
 	stopMessageTs?: string;
 	/** The display channel where output is currently routed (real channel ID) */
 	displayChannelId: string;
@@ -645,6 +647,7 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 			runner,
 			store: new ChannelStore({ workingDir, botToken: process.env.MOM_SLACK_BOT_TOKEN || "" }),
 			stopRequested: false,
+			interruptRequested: false,
 			displayChannelId: channelId,
 			displayAdapter: adapter,
 		};
@@ -671,6 +674,167 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 	return awareness;
 }
 
+interface PendingInterrupt {
+	event: MomEvent;
+	adapter: PlatformAdapter;
+	receivedAt: number;
+}
+
+const pendingInterrupts: PendingInterrupt[] = [];
+let interruptRestartScheduled = false;
+const MAX_INTERRUPT_BATCH = 10;
+
+function formatLocalTimestamp(ms = Date.now()): string {
+	const now = new Date(ms);
+	const pad = (n: number) => n.toString().padStart(2, "0");
+	const offset = -now.getTimezoneOffset();
+	const offsetSign = offset >= 0 ? "+" : "-";
+	const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
+	const offsetMins = pad(Math.abs(offset) % 60);
+	return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetMins}`;
+}
+
+function formatInterruptLine(item: PendingInterrupt): string {
+	const channelLabel = getChannelLabel(item.event.channel, adapters);
+	const user = item.adapter.getUser(item.event.user);
+	const userName = user?.userName || item.event.user || "unknown";
+	return `[${formatLocalTimestamp(item.receivedAt)}] [${channelLabel}] [${userName}]: ${item.event.text}`;
+}
+
+function buildInterruptEvent(batch: PendingInterrupt[]): { event: MomEvent; adapter: PlatformAdapter } {
+	const latest = batch[batch.length - 1];
+	if (batch.length === 1) {
+		return { event: latest.event, adapter: latest.adapter };
+	}
+
+	return {
+		adapter: latest.adapter,
+		event: {
+			...latest.event,
+			text: `Recent messages:\n${batch.map(formatInterruptLine).join("\n")}`,
+			attachments: latest.event.attachments,
+			files: latest.event.files,
+		},
+	};
+}
+
+function enqueueHardInterrupt(event: MomEvent, adapter: PlatformAdapter): void {
+	pendingInterrupts.push({ event, adapter, receivedAt: Date.now() });
+	if (pendingInterrupts.length > MAX_INTERRUPT_BATCH) {
+		pendingInterrupts.splice(0, pendingInterrupts.length - MAX_INTERRUPT_BATCH);
+	}
+
+	if (awareness?.running) {
+		awareness.interruptRequested = true;
+		log.logInfo(`[interrupt:${event.channel}] Preempting active run for new message: ${event.text.substring(0, 80)}`);
+		try {
+			awareness.runner.abort();
+		} catch (err) {
+			log.logWarning(`[interrupt:${event.channel}] Failed to abort active run`, err instanceof Error ? err.message : String(err));
+		}
+	} else {
+		log.logInfo(`[interrupt:${event.channel}] Queued interrupt restart behind ${describeActiveRun()}: ${event.text.substring(0, 80)}`);
+	}
+
+	scheduleInterruptRestart();
+}
+
+function scheduleInterruptRestart(): void {
+	if (interruptRestartScheduled) return;
+	interruptRestartScheduled = true;
+
+	void withGlobalRunSlot("interrupt:restart", async () => {
+		interruptRestartScheduled = false;
+		const batch = pendingInterrupts.splice(0);
+		if (batch.length === 0) return;
+
+		const { event, adapter } = buildInterruptEvent(batch);
+		log.logInfo(`[interrupt:${event.channel}] Restarting from ${batch.length} pending message(s)`);
+		await runEventInSlot(event, adapter, false);
+
+		if (pendingInterrupts.length > 0) {
+			scheduleInterruptRestart();
+		}
+	}).catch((err) => {
+		interruptRestartScheduled = false;
+		log.logWarning(`[interrupt] Restart failed`, err instanceof Error ? err.message : String(err));
+		if (pendingInterrupts.length > 0) {
+			scheduleInterruptRestart();
+		}
+	});
+}
+
+async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<void> {
+	// Ensure awareness is initialized (needed for /context and other commands)
+	const state = await getAwareness(event.channel, platform, platform.formatInstructions);
+
+	// Route display output to the channel for the active run only. Queued runs
+	// must not steal the display pointer from the in-flight run.
+	state.displayChannelId = event.channel;
+	state.displayAdapter = platform;
+
+	// Intercept slash commands before spinning up the agent
+	const trimmed = event.text.trim();
+	if (trimmed.startsWith("/") && !isEvent) {
+		const handled = await executeSlashCommand(trimmed, event.channel, workingDir, platform, state.runner);
+		if (handled) return;
+	}
+
+	// Start run
+	state.running = true;
+	state.lastActivity = Date.now();
+	state.stopRequested = false;
+	state.interruptRequested = false;
+
+	const channelLabel = getChannelLabel(event.channel, adapters);
+	log.logInfo(`[${platform.name}:${event.channel}] Starting run (${channelLabel}): ${event.text.substring(0, 50)}`);
+
+	try {
+		if (pendingInterrupts.length > 0) {
+			log.logInfo(`[interrupt:${event.channel}] Run superseded before start by ${pendingInterrupts.length} newer message(s)`);
+			scheduleInterruptRestart();
+			return;
+		}
+
+		// Create context from adapter — targets the DISPLAY channel (real channel ID)
+		const ctx = platform.createContext(event, state.store, isEvent);
+
+		// Run the agent
+		await ctx.setTyping(true);
+		await ctx.setWorking(true);
+		if (state.interruptRequested) {
+			log.logInfo(`[interrupt:${event.channel}] Run superseded before model prompt`);
+			await ctx.setWorking(false);
+			return;
+		}
+		const result = await state.runner.run(ctx, state.store);
+		await ctx.setWorking(false);
+
+		if (result.stopReason === "aborted" && state.stopRequested) {
+			if (state.stopMessageTs) {
+				await platform.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
+				state.stopMessageTs = undefined;
+			} else {
+				await platform.postMessage(event.channel, "_Stopped_");
+			}
+		}
+	} catch (err) {
+		const errMsg = err instanceof Error ? err.message : String(err);
+		log.logWarning(
+			`[${platform.name}:${event.channel}] Run error`,
+			errMsg,
+		);
+		if (!state.interruptRequested) {
+			try {
+				await platform.postMessage(event.channel, `⚠ Run failed: ${errMsg}`);
+			} catch { /* best-effort */ }
+		}
+	} finally {
+		state.running = false;
+		state.interruptRequested = false;
+	}
+}
+
 // ============================================================================
 // Handler (shared across all adapters)
 // ============================================================================
@@ -693,40 +857,13 @@ const handler: MomHandler = {
 
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): void {
 		if (!awareness || !isRunBusy()) {
-			log.logWarning(`[steer] handleSteer called but awareness not running`);
+			log.logWarning(`[interrupt] handleSteer called but awareness not running`);
 			return;
 		}
 
-		// Format the message with timestamp
-		const now = new Date();
-		const pad = (n: number) => n.toString().padStart(2, "0");
-		const offset = -now.getTimezoneOffset();
-		const offsetSign = offset >= 0 ? "+" : "-";
-		const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
-		const offsetMins = pad(Math.abs(offset) % 60);
-		const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetMins}`;
-
-		// Resolve user name from adapter metadata
-		const user = adapter.getUser(event.user);
-		const userName = user?.userName || event.user || "unknown";
-
-		// Tag with source channel for awareness
-		const isCrossChannel = event.channel !== awareness.displayChannelId;
-		const channelLabel = getChannelLabel(event.channel, adapters);
-		let formattedMessage: string;
-
-		if (isCrossChannel) {
-			const currentLabel = getChannelDisplayName(awareness.displayChannelId, adapters);
-			formattedMessage = `[${timestamp}] [${channelLabel}] [${userName}]: ${event.text}`;
-
-			// Directive steering prompt — always acknowledge, shift on urgency
-			formattedMessage += `\n\n---\n[HARNESS] A message arrived from ${channelLabel} while you are attending to ${currentLabel}.\n\nREQUIRED: Use the \`send_message_to_channel\` tool to acknowledge the sender on ${channelLabel} immediately. A short "Got it, working on something — one moment" is fine. Never leave a cross-channel message unacknowledged.\n\nIf the message is urgent or more important than your current task, also call \`move_to_channel\` to shift your attention to ${channelLabel} and abandon your current task — you can resume it later.`;
-		} else {
-			formattedMessage = `[${timestamp}] [${channelLabel}] [${userName}]: ${event.text}`;
-		}
-
-		log.logInfo(`[steer:${event.channel}] Steering message into active run: ${event.text.substring(0, 50)}`);
-		awareness.runner.steer(formattedMessage);
+		// Busy inbound messages now preempt stale generation instead of being
+		// appended as soft steering after the current assistant turn completes.
+		enqueueHardInterrupt(event, adapter);
 	},
 
 	async handleStop(channelId: string, platform: PlatformAdapter): Promise<void> {
@@ -745,62 +882,8 @@ const handler: MomHandler = {
 	},
 
 	async handleEvent(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<void> {
-		// Ensure awareness is initialized (needed for /context and other commands)
-		const state = await getAwareness(event.channel, platform, platform.formatInstructions);
 		const label = `${platform.name}:${event.channel}`;
-
-		return withGlobalRunSlot(label, async () => {
-			// Route display output to the channel for the active run only. Queued runs
-			// must not steal the display pointer from the in-flight run.
-			state.displayChannelId = event.channel;
-			state.displayAdapter = platform;
-
-			// Intercept slash commands before spinning up the agent
-			const trimmed = event.text.trim();
-			if (trimmed.startsWith("/") && !isEvent) {
-				const handled = await executeSlashCommand(trimmed, event.channel, workingDir, platform, state.runner);
-				if (handled) return;
-			}
-
-			// Start run
-			state.running = true;
-			state.lastActivity = Date.now();
-			state.stopRequested = false;
-
-			const channelLabel = getChannelLabel(event.channel, adapters);
-			log.logInfo(`[${platform.name}:${event.channel}] Starting run (${channelLabel}): ${event.text.substring(0, 50)}`);
-
-			try {
-				// Create context from adapter — targets the DISPLAY channel (real channel ID)
-				const ctx = platform.createContext(event, state.store, isEvent);
-
-				// Run the agent
-				await ctx.setTyping(true);
-				await ctx.setWorking(true);
-				const result = await state.runner.run(ctx, state.store);
-				await ctx.setWorking(false);
-
-				if (result.stopReason === "aborted" && state.stopRequested) {
-					if (state.stopMessageTs) {
-						await platform.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
-						state.stopMessageTs = undefined;
-					} else {
-						await platform.postMessage(event.channel, "_Stopped_");
-					}
-				}
-			} catch (err) {
-				const errMsg = err instanceof Error ? err.message : String(err);
-				log.logWarning(
-					`[${platform.name}:${event.channel}] Run error`,
-					errMsg,
-				);
-				try {
-					await platform.postMessage(event.channel, `⚠ Run failed: ${errMsg}`);
-				} catch { /* best-effort */ }
-			} finally {
-				state.running = false;
-			}
-		});
+		return withGlobalRunSlot(label, () => runEventInSlot(event, platform, isEvent));
 	},
 };
 
