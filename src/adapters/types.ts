@@ -85,8 +85,9 @@ export interface MomHandler {
 
 	/**
 	 * Handle a message that arrives while the runtime is busy.
-	 * Troublemaker hard-preempts the stale run and restarts from the newer
-	 * message instead of appending it as soft steering after the current turn.
+	 * Busy messages are soft-steered into the active run. They do not abort
+	 * active tool work, but they can invalidate stale cross-channel sends until
+	 * incorporated into a fresh assistant turn.
 	 */
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): void;
 

@@ -16,6 +16,7 @@ import { Type } from "typebox";
 import { basename } from "path";
 import type { PlatformAdapter } from "../adapters/types.js";
 import * as log from "../log.js";
+import type { SendFreshnessGuard } from "../send-freshness-guard.js";
 
 /** Resolve which adapter can handle a given channel ID */
 export function resolveAdapter(channel: string, adapters: PlatformAdapter[]): PlatformAdapter | undefined {
@@ -39,7 +40,7 @@ export function resolveAdapter(channel: string, adapters: PlatformAdapter[]): Pl
  *
  * @param adapters - All platform adapters available for routing
  */
-export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): AgentTool<any> {
+export function createSendMessageToChannelTool(adapters: PlatformAdapter[], freshnessGuard?: SendFreshnessGuard): AgentTool<any> {
 	const schema = Type.Object({
 		label: Type.String({ description: "Brief description of what you're sending (shown in logs)" }),
 		channel: Type.String({ description: "Channel ID to send to (e.g., Telegram chat ID, Slack channel ID, email-user@example.com)" }),
@@ -92,10 +93,21 @@ export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): Age
 					filename: basename(filePath),
 				}));
 
-				// Re-check immediately before the external side effect so an interrupt
-				// that arrives during argument prep can suppress stale outbound text.
+				// Re-check immediately before the external side effect so explicit stop
+				// can suppress stale outbound text.
 				if (signal?.aborted) {
 					throw new Error("Operation aborted");
+				}
+
+				const freshness = freshnessGuard?.checkCanSend();
+				if (freshness && !freshness.ok) {
+					const reason = freshness.reason || "A newer inbound message has not been incorporated yet.";
+					log.logInfo(`[send_message_to_channel] Suppressed stale send to ${adapter.name}:${channel}: ${reason}`);
+					return {
+						content: [{ type: "text" as const, text: `Message not sent: ${reason} Incorporate the latest message first, then decide whether to send.` }],
+						details: undefined,
+						terminate: true,
+					};
 				}
 
 				const ts = await adapter.postMessage(channel, text, attachmentObjects, subject);

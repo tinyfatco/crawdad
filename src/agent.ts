@@ -74,6 +74,10 @@ export interface AgentRunner {
 	clear(): Promise<{ messagesCleared: number }>;
 	/** Called on every substantive event (tool call, LLM token, etc.) during a run */
 	onActivity?: () => void;
+	/** Called when a queued/steered user message is incorporated into context. */
+	onUserMessageIncorporated?: (text: string) => void;
+	/** Called when a new assistant turn starts. */
+	onAssistantTurnStart?: () => void;
 }
 
 
@@ -367,6 +371,23 @@ function truncate(text: string, maxLen: number): string {
 	return `${text.substring(0, maxLen - 3)}...`;
 }
 
+function extractMessageText(message: { content?: unknown[] }): string {
+	const parts: string[] = [];
+	for (const part of message.content || []) {
+		if (
+			part &&
+			typeof part === "object" &&
+			"type" in part &&
+			(part as { type?: unknown }).type === "text" &&
+			"text" in part &&
+			typeof (part as { text?: unknown }).text === "string"
+		) {
+			parts.push((part as { text: string }).text);
+		}
+	}
+	return parts.join("\n");
+}
+
 function extractToolResultText(result: unknown): string {
 	if (typeof result === "string") {
 		return result;
@@ -585,8 +606,10 @@ function createRunner(
 		initialPromptSent: false,
 	};
 
-	// Activity callback for external watchdog
+	// Activity callbacks for external watchdog / freshness guards
 	let onActivity: (() => void) | undefined;
+	let onUserMessageIncorporated: ((text: string) => void) | undefined;
+	let onAssistantTurnStart: (() => void) | undefined;
 
 	// Event handler
 	let _eventSeq = 0;
@@ -660,9 +683,12 @@ function createRunner(
 		} else if (event.type === "message_start") {
 			const agentEvent = event as AgentEvent & { type: "message_start" };
 			if (agentEvent.message.role === "assistant") {
+				onAssistantTurnStart?.();
 				log.logResponseStart(logCtx);
 			} else if (agentEvent.message.role === "user") {
 				if (runState.initialPromptSent) {
+					const steeredText = extractMessageText(agentEvent.message as { content?: unknown[] });
+					onUserMessageIncorporated?.(steeredText);
 					log.logInfo(`[awareness] Steered message detected, restarting working message`);
 					queue.enqueue(async () => {
 						await ctx.restartWorking();
@@ -1207,6 +1233,12 @@ function createRunner(
 
 		get onActivity(): (() => void) | undefined { return onActivity; },
 		set onActivity(fn: (() => void) | undefined) { onActivity = fn; },
+
+		get onUserMessageIncorporated(): ((text: string) => void) | undefined { return onUserMessageIncorporated; },
+		set onUserMessageIncorporated(fn: ((text: string) => void) | undefined) { onUserMessageIncorporated = fn; },
+
+		get onAssistantTurnStart(): (() => void) | undefined { return onAssistantTurnStart; },
+		set onAssistantTurnStart(fn: (() => void) | undefined) { onAssistantTurnStart = fn; },
 
 		async clear(): Promise<{ messagesCleared: number }> {
 			const contextFile = join(awarenessDir, "context.jsonl");
